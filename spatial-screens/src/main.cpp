@@ -190,9 +190,9 @@ int main(int argc, char** argv) {
     // predict 0 by default: XRLinuxDriver's known-good usage passes 0, and
     // extrapolation visibly amplifies rotation jitter during head turns.
     // 24" at 0.75 m = desk-monitor ergonomics that fit the 52-degree FOV.
-    // 10 ms prediction cancels pipeline latency; its noise is tamed by the
-    // One-Euro filter downstream.
-    float distance = 0.75f, diag_in = 24.f, pitch_trim = 0.f, predict_ms = 10.f;
+    // Prediction stays 0: extrapolation noise feeds the filter's speed
+    // estimate and reads as shake (verified across builds).
+    float distance = 0.75f, diag_in = 24.f, pitch_trim = 0.f, predict_ms = 0.f;
     // Pose smoothing (EMA blend factor per frame, 1 = off). Position gets a
     // heavy filter — VIO translation is where the jitter lives; orientation
     // stays light so head tracking doesn't feel laggy.
@@ -312,10 +312,19 @@ int main(int argc, char** argv) {
     GLXContext ctx = glXCreateContext(dpy, vi, nullptr, True);
     glXMakeCurrent(dpy, win, ctx);
 
-    // vsync on if available
+    // Sync strategy: prefer explicit vblank waits (GLX_SGI_video_sync) with
+    // swap interval 0 — the interval-1 path has torn on this output through
+    // every compositor configuration tried. Fall back to interval 1.
+    typedef int (*SgiGetProc)(unsigned int*);
+    typedef int (*SgiWaitProc)(int, int, unsigned int*);
+    auto sgi_get = (SgiGetProc)glXGetProcAddress((const GLubyte*)"glXGetVideoSyncSGI");
+    auto sgi_wait = (SgiWaitProc)glXGetProcAddress((const GLubyte*)"glXWaitVideoSyncSGI");
+    unsigned int vsync_count = 0;
+    bool use_sgi = sgi_get && sgi_wait && sgi_get(&vsync_count) == 0;
     typedef void (*SwapIntervalProc)(Display*, GLXDrawable, int);
     if (auto p = (SwapIntervalProc)glXGetProcAddress((const GLubyte*)"glXSwapIntervalEXT"))
-        p(dpy, win, 1);
+        p(dpy, win, use_sgi ? 0 : 1);
+    printf("vblank sync: %s\n", use_sgi ? "explicit (SGI_video_sync)" : "swap interval");
 
     // -- capture setup (XShm full-source-monitor grabs)
     XShmSegmentInfo shm{};
@@ -430,14 +439,14 @@ int main(int argc, char** argv) {
                 const float Te = 1.f / 120.f;
                 float dx = rp.x - head_p.x, dy = rp.y - head_p.y, dz = rp.z - head_p.z;
                 float speed = std::sqrt(dx * dx + dy * dy + dz * dz) / Te; // m/s
-                const float d_cutoff = 2.5f; // Hz — how fast the speed estimate reacts
+                const float d_cutoff = 1.8f; // Hz — how fast the speed estimate reacts
                 float ad = 1.f / (1.f + 1.f / (2.f * float(M_PI) * d_cutoff * Te));
                 speed_hat += (speed - speed_hat) * ad;
                 float min_cutoff = smooth_pos * 4.f; // default 0.10 → 0.4 Hz at rest
                 // Deadband removes the VIO noise floor from the speed signal,
-                // allowing an aggressive motion gain without rest wiggle.
-                float speed_eff = std::max(0.f, speed_hat - 0.05f);
-                float cutoff = min_cutoff + 15.f * speed_eff;
+                // allowing a strong motion gain without rest wiggle.
+                float speed_eff = std::max(0.f, speed_hat - 0.03f);
+                float cutoff = min_cutoff + 9.f * speed_eff;
                 float ap = 1.f / (1.f + 1.f / (2.f * float(M_PI) * cutoff * Te));
                 head_p.x += dx * ap;
                 head_p.y += dy * ap;
@@ -552,6 +561,10 @@ int main(int argc, char** argv) {
             glEnd();
         }
 
+        if (use_sgi) {
+            glFlush();
+            if (sgi_wait(2, int((vsync_count + 1) & 1), &vsync_count) != 0) use_sgi = false;
+        }
         glXSwapBuffers(dpy, win);
         frames++;
         if (tnow - last_fps_t >= 2.0) {
