@@ -1473,6 +1473,8 @@ add `bool force_window = false;` next to the other option defaults, and update t
     vk.phys = sout.phys;
     vk.surface = sout.surface;
     if (!vkr_init_device(vk) || !vkr_init_swapchain(vk) || !vkr_init_pipeline(vk)) {
+        vkr_destroy_device(vk);
+        if (sout.direct) direct_release(vk.instance);
         vkr_destroy(vk);
         if (sout.direct) direct_restore(dpy);
         return 1;
@@ -1509,6 +1511,8 @@ add `bool force_window = false;` next to the other option defaults, and update t
     uint32_t tex_pitch = test_pattern ? uint32_t(tex_w) * 4
                                       : uint32_t(ximg->bytes_per_line);
     if (!vkr_init_texture(vk, tex_w, tex_h, tex_pitch)) {
+        vkr_destroy_device(vk);
+        if (sout.direct) direct_release(vk.instance);
         vkr_destroy(vk);
         if (sout.direct) direct_restore(dpy);
         return 1;
@@ -1520,6 +1524,8 @@ Also in this step: the `// -- SDK last` block's `if (!sdk_init()) return 1;` mus
 
 ```cpp
     if (!sdk_init()) {
+        vkr_destroy_device(vk);
+        if (sout.direct) direct_release(vk.instance);
         vkr_destroy(vk);
         if (sout.direct) direct_restore(dpy);
         return 1;
@@ -1634,12 +1640,16 @@ Also in this step: the `// -- SDK last` block's `if (!sdk_init()) return 1;` mus
 
 ```cpp
     if (ximg) { XShmDetach(dpy, &shm); XDestroyImage(ximg); shmdt(shm.shmaddr); }
-    vkr_destroy(vk);                       // instance destruction drops the lease
-    if (sout.direct) direct_restore(dpy);  // then hand the output back to the desktop
+    vkr_destroy_device(vk);                        // swapchain/surface/device first
+    if (sout.direct) direct_release(vk.instance);  // drop the lease (instance teardown never does)
+    vkr_destroy(vk);
+    if (sout.direct) direct_restore(dpy);          // now the server can re-enable the output
     else if (sout.window) XDestroyWindow(dpy, sout.window);
     XCloseDisplay(dpy);
     return 0;
 ```
+
+(Teardown discovery from the Task 6 hardware checkpoint: Mesa holds the lease fd for the process lifetime, so `vkReleaseDisplayEXT` — via `direct_release` — is mandatory between device and instance teardown; `direct_restore` retries `XRRSetCrtcConfig` while the server processes the release.)
 
 - [ ] **Step 14: Makefile + run.sh cleanup.** In `spatial-screens/Makefile` delete the `LEGACY_GL := -lGL` line and remove `$(LEGACY_GL)` from `LDFLAGS`. In `spatial-screens/run.sh` delete the two GL vsync exports and their comment (`# Force vsync on both driver stacks...`, `export vblank_mode=3`, `export __GL_SYNC_TO_VBLANK=1`) — Vulkan FIFO owns pacing now.
 
