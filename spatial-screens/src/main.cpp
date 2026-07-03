@@ -190,7 +190,9 @@ int main(int argc, char** argv) {
     // predict 0 by default: XRLinuxDriver's known-good usage passes 0, and
     // extrapolation visibly amplifies rotation jitter during head turns.
     // 24" at 0.75 m = desk-monitor ergonomics that fit the 52-degree FOV.
-    float distance = 0.75f, diag_in = 24.f, pitch_trim = 0.f, predict_ms = 0.f;
+    // 10 ms prediction cancels pipeline latency; its noise is tamed by the
+    // One-Euro filter downstream.
+    float distance = 0.75f, diag_in = 24.f, pitch_trim = 0.f, predict_ms = 10.f;
     // Pose smoothing (EMA blend factor per frame, 1 = off). Position gets a
     // heavy filter — VIO translation is where the jitter lives; orientation
     // stays light so head tracking doesn't feel laggy.
@@ -260,11 +262,21 @@ int main(int argc, char** argv) {
     if (!vi) { fprintf(stderr, "no GLX visual\n"); return 1; }
     XSetWindowAttributes swa{};
     swa.colormap = XCreateColormap(dpy, root, vi->visual, AllocNone);
-    swa.override_redirect = True;
     swa.event_mask = KeyPressMask | StructureNotifyMask;
+    // A managed EWMH-fullscreen window, NOT override-redirect: Mutter's
+    // unredirect fast path (direct per-CRTC page flips, tear-free) only
+    // engages for proper fullscreen windows — OR windows stay composited on
+    // the primary monitor's clock and tear on every other output.
     Window win = XCreateWindow(dpy, root, glasses.x, glasses.y, glasses.w, glasses.h, 0,
                                vi->depth, InputOutput, vi->visual,
-                               CWColormap | CWOverrideRedirect | CWEventMask, &swa);
+                               CWColormap | CWEventMask, &swa);
+    XStoreName(dpy, win, "spatial-screens");
+    {
+        Atom wm_state = XInternAtom(dpy, "_NET_WM_STATE", False);
+        Atom wm_fs = XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", False);
+        XChangeProperty(dpy, win, wm_state, XA_ATOM, 32, PropModeReplace,
+                        (unsigned char*)&wm_fs, 1);
+    }
     // Ask the compositor to unredirect us: on multi-monitor X11 the
     // compositor paces frames to one monitor's clock, tearing the others.
     // Bypassing it lets our SwapBuffers sync directly to the glasses' CRTC.
@@ -276,7 +288,9 @@ int main(int argc, char** argv) {
     }
     XMapRaised(dpy, win);
     XMoveResizeWindow(dpy, win, glasses.x, glasses.y, glasses.w, glasses.h);
-    XSetInputFocus(dpy, win, RevertToParent, CurrentTime);
+    // No XSetInputFocus: a managed window maps asynchronously (BadMatch if
+    // not yet viewable) and the WM focuses fullscreen windows on its own;
+    // controls use global Ctrl+Alt hotkeys regardless.
 
     // Global hotkeys (Ctrl+Alt+key) — focus on an override-redirect window is
     // unreliable, and the MVP wants a global recenter shortcut anyway. Grab
@@ -416,11 +430,14 @@ int main(int argc, char** argv) {
                 const float Te = 1.f / 120.f;
                 float dx = rp.x - head_p.x, dy = rp.y - head_p.y, dz = rp.z - head_p.z;
                 float speed = std::sqrt(dx * dx + dy * dy + dz * dz) / Te; // m/s
-                const float d_cutoff = 1.f; // Hz — how fast the speed estimate reacts
+                const float d_cutoff = 2.5f; // Hz — how fast the speed estimate reacts
                 float ad = 1.f / (1.f + 1.f / (2.f * float(M_PI) * d_cutoff * Te));
                 speed_hat += (speed - speed_hat) * ad;
                 float min_cutoff = smooth_pos * 4.f; // default 0.10 → 0.4 Hz at rest
-                float cutoff = min_cutoff + 4.f * speed_hat;
+                // Deadband removes the VIO noise floor from the speed signal,
+                // allowing an aggressive motion gain without rest wiggle.
+                float speed_eff = std::max(0.f, speed_hat - 0.05f);
+                float cutoff = min_cutoff + 15.f * speed_eff;
                 float ap = 1.f / (1.f + 1.f / (2.f * float(M_PI) * cutoff * Te));
                 head_p.x += dx * ap;
                 head_p.y += dy * ap;
