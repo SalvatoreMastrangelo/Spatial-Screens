@@ -115,9 +115,28 @@ static void mat_projection_vk(float rr, float tt, float n, float f, float* m) {
 
 static XRDeviceProviderHandle g_provider = nullptr;
 static std::atomic<bool> g_running{true};
+static bool g_probe_camera = false;
+static int g_probe_frames_remaining = 0;
 
 static void on_imu_noop(float*, double) {}
 static void on_pose_noop(float*, double) {}
+
+static void on_camera_carina(char* image_left0, char* /*image_right0*/,
+                              char* /*image_left1*/, char* /*image_right1*/,
+                              double timestamp, int width, int height) {
+    if (!g_probe_camera || g_probe_frames_remaining <= 0) return;
+    static int frame_idx = 0;
+    char path[256];
+    snprintf(path, sizeof(path), "/tmp/spatial-screens-probe-%03d.pgm", frame_idx++);
+    FILE* f = fopen(path, "wb");
+    if (f) {
+        fprintf(f, "P5\n%d %d\n255\n", width, height);
+        fwrite(image_left0, 1, size_t(width) * size_t(height), f);
+        fclose(f);
+        printf("gestures: probe frame -> %s (%dx%d, t=%.3f)\n", path, width, height, timestamp);
+    }
+    g_probe_frames_remaining--;
+}
 
 static int scan_viture_pid() {
     DIR* dir = opendir("/sys/bus/usb/devices");
@@ -165,7 +184,7 @@ static bool sdk_init() {
     // rendering, but the first session of the day (pose callback registered)
     // showed live VIO translation while later imu-only sessions did not —
     // cheap insurance in case registration gates the camera pipeline.
-    if (register_callbacks_carina(g_provider, on_pose_noop, nullptr, on_imu_noop, nullptr) != 0 ||
+    if (register_callbacks_carina(g_provider, on_pose_noop, nullptr, on_imu_noop, on_camera_carina) != 0 ||
         xr_device_provider_initialize(g_provider, nullptr) != 0) {
         fprintf(stderr, "SDK init failed\n");
         return false;
@@ -219,6 +238,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--smooth-pos")) next(smooth_pos);
         else if (!strcmp(argv[i], "--smooth-ori")) next(smooth_ori);
         else if (!strcmp(argv[i], "--window")) force_window = true;
+        else if (!strcmp(argv[i], "--probe-camera")) { g_probe_camera = true; g_probe_frames_remaining = 10; }
         else {
             printf("usage: %s [--monitor NAME] [--capture NAME|test] [--distance M] "
                    "[--size IN] [--pitch-trim DEG] [--predict-ms MS] "
