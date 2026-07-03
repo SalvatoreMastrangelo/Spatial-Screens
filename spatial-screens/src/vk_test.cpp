@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <vector>
 
 static std::atomic<bool> g_running{true};
@@ -63,11 +64,14 @@ int main(int argc, char** argv) {
     }
     vk.phys = sout.phys;
     vk.surface = sout.surface;
-    if (!vkr_init_device(vk) || !vkr_init_swapchain(vk) || !vkr_init_pipeline(vk))
-        return 1;
 
     const uint32_t TW = 512, TH = 512;
-    if (!vkr_init_texture(vk, TW, TH, TW * 4)) return 1;
+    if (!vkr_init_device(vk) || !vkr_init_swapchain(vk) || !vkr_init_pipeline(vk) ||
+        !vkr_init_texture(vk, TW, TH, TW * 4)) {
+        vkr_destroy(vk);
+        if (sout.direct) direct_restore(dpy);
+        return 1;
+    }
     std::vector<uint32_t> px(TW * TH);
 
     auto t0 = std::chrono::steady_clock::now();
