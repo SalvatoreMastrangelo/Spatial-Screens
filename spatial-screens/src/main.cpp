@@ -207,7 +207,11 @@ int main(int argc, char** argv) {
     for (auto& o : outputs) printf("  %-10s %dx%d+%d+%d\n", o.name.c_str(), o.w, o.h, o.x, o.y);
     for (auto& o : outputs) {
         bool is_glasses_mode = (o.h == 1200 && (o.w == 1920 || o.w == 3840));
-        if (!monitor_name.empty() ? o.name == monitor_name : is_glasses_mode) {
+        // Laptop panels (eDP-*) can share the glasses' 1920x1200 mode — never
+        // auto-pick them, or we fullscreen over the user's own screen.
+        bool is_laptop_panel = o.name.rfind("eDP", 0) == 0 || o.name.rfind("LVDS", 0) == 0;
+        if (!monitor_name.empty() ? o.name == monitor_name
+                                  : (is_glasses_mode && !is_laptop_panel)) {
             glasses = o; have_glasses = true; break;
         }
     }
