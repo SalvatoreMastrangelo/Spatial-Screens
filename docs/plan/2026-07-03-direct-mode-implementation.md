@@ -1508,8 +1508,22 @@ add `bool force_window = false;` next to the other option defaults, and update t
     int tex_h = test_pattern ? 576 : source.h;
     uint32_t tex_pitch = test_pattern ? uint32_t(tex_w) * 4
                                       : uint32_t(ximg->bytes_per_line);
-    if (!vkr_init_texture(vk, tex_w, tex_h, tex_pitch)) return 1;
+    if (!vkr_init_texture(vk, tex_w, tex_h, tex_pitch)) {
+        vkr_destroy(vk);
+        if (sout.direct) direct_restore(dpy);
+        return 1;
+    }
     std::vector<uint32_t> pattern(size_t(tex_w) * tex_h);
+```
+
+Also in this step: the `// -- SDK last` block's `if (!sdk_init()) return 1;` must get the same guard (spec: restore runs on EVERY post-acquisition exit path) — replace it with:
+
+```cpp
+    if (!sdk_init()) {
+        vkr_destroy(vk);
+        if (sout.direct) direct_restore(dpy);
+        return 1;
+    }
 ```
 
 - [ ] **Step 9: Projection block.** In the `// -- projection ...` section, keep the `DIAG_FOV`/`diag_px`/`half`/`near_z`/`far_z`/`r`/`t` computations but change `glasses.w`/`glasses.h` to the actual swapchain in direct mode — insert immediately before `float diag_px = ...`:
