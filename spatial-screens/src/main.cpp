@@ -28,6 +28,7 @@
 #include <sys/ipc.h>
 #include <sys/shm.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -93,6 +94,7 @@ static XRDeviceProviderHandle g_provider = nullptr;
 static std::atomic<bool> g_running{true};
 
 static void on_imu_noop(float*, double) {}
+static void on_pose_noop(float*, double) {}
 
 static int scan_viture_pid() {
     DIR* dir = opendir("/sys/bus/usb/devices");
@@ -136,7 +138,11 @@ static bool sdk_init() {
         fprintf(stderr, "This spike needs a Luma Ultra (6DoF/Carina) device.\n");
         return false;
     }
-    if (register_callbacks_carina(g_provider, nullptr, nullptr, on_imu_noop, nullptr) != 0 ||
+    // Register a no-op pose callback too: we poll get_gl_pose_carina for
+    // rendering, but the first session of the day (pose callback registered)
+    // showed live VIO translation while later imu-only sessions did not —
+    // cheap insurance in case registration gates the camera pipeline.
+    if (register_callbacks_carina(g_provider, on_pose_noop, nullptr, on_imu_noop, nullptr) != 0 ||
         xr_device_provider_initialize(g_provider, nullptr) != 0) {
         fprintf(stderr, "SDK init failed\n");
         return false;
@@ -177,7 +183,16 @@ static void on_signal(int) { g_running = false; }
 
 int main(int argc, char** argv) {
     std::string monitor_name, capture_name;
-    float distance = 1.75f, diag_in = 120.f, pitch_trim = 0.f, predict_ms = 8.f;
+    // Defaults sized to FIT the Ultra's 52-degree FOV with margin: at 2 m the
+    // panel shows ~85 inches full-width — a 60-inch screen leaves the frame
+    // and the world visible around it, which is what makes 6DoF perceivable.
+    // predict 0 by default: XRLinuxDriver's known-good usage passes 0, and
+    // extrapolation visibly amplifies rotation jitter during head turns.
+    float distance = 2.0f, diag_in = 60.f, pitch_trim = 0.f, predict_ms = 0.f;
+    // Pose smoothing (EMA blend factor per frame, 1 = off). Position gets a
+    // heavy filter — VIO translation is where the jitter lives; orientation
+    // stays light so head tracking doesn't feel laggy.
+    float smooth_pos = 0.10f, smooth_ori = 0.40f;
     for (int i = 1; i < argc; i++) {
         auto next = [&](float& v) { if (i + 1 < argc) v = atof(argv[++i]); };
         if (!strcmp(argv[i], "--monitor") && i + 1 < argc) monitor_name = argv[++i];
@@ -186,9 +201,12 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--size")) next(diag_in);
         else if (!strcmp(argv[i], "--pitch-trim")) next(pitch_trim);
         else if (!strcmp(argv[i], "--predict-ms")) next(predict_ms);
+        else if (!strcmp(argv[i], "--smooth-pos")) next(smooth_pos);
+        else if (!strcmp(argv[i], "--smooth-ori")) next(smooth_ori);
         else {
             printf("usage: %s [--monitor NAME] [--capture NAME|test] [--distance M] "
-                   "[--size IN] [--pitch-trim DEG] [--predict-ms MS]\n", argv[0]);
+                   "[--size IN] [--pitch-trim DEG] [--predict-ms MS] "
+                   "[--smooth-pos 0..1] [--smooth-ori 0..1]\n", argv[0]);
             return 0;
         }
     }
@@ -248,6 +266,24 @@ int main(int argc, char** argv) {
     XMapRaised(dpy, win);
     XMoveResizeWindow(dpy, win, glasses.x, glasses.y, glasses.w, glasses.h);
     XSetInputFocus(dpy, win, RevertToParent, CurrentTime);
+
+    // Global hotkeys (Ctrl+Alt+key) — focus on an override-redirect window is
+    // unreliable, and the MVP wants a global recenter shortcut anyway. Grab
+    // each combo with NumLock/CapsLock variants so they fire regardless.
+    {
+        KeySym hot[] = { XK_r, XK_bracketleft, XK_bracketright, XK_minus, XK_equal, XK_q };
+        unsigned base = ControlMask | Mod1Mask;
+        unsigned locks[] = { 0, Mod2Mask, LockMask, Mod2Mask | LockMask };
+        for (KeySym ks : hot) {
+            KeyCode kc = XKeysymToKeycode(dpy, ks);
+            if (!kc) continue;
+            for (unsigned lk : locks) {
+                XGrabKey(dpy, kc, base | lk, root, True, GrabModeAsync, GrabModeAsync);
+                if (ks == XK_r)
+                    XGrabKey(dpy, kc, base | ShiftMask | lk, root, True, GrabModeAsync, GrabModeAsync);
+            }
+        }
+    }
     GLXContext ctx = glXCreateContext(dpy, vi, nullptr, True);
     glXMakeCurrent(dpy, win, ctx);
 
@@ -317,7 +353,16 @@ int main(int argc, char** argv) {
     int frames = 0;
     bool have_pose = false;
 
-    printf("running — R recenter, Shift+R reset VIO, [ ] distance, - = size, Q quit\n");
+    // 6DoF liveness heuristic: if the head clearly rotates but reported
+    // position stays frozen, the VIO is running orientation-only.
+    bool sixdof_live = false;
+    Vec3 win_min, win_max;
+    Quat win_q0;
+    float win_max_ang = 0;
+    int win_n = 0;
+
+    printf("running — hotkeys work globally with Ctrl+Alt: R recenter (Shift adds "
+           "VIO reset), [ ] distance, - = size, Q quit\n");
 
     while (g_running) {
         // ---- input
@@ -340,12 +385,62 @@ int main(int argc, char** argv) {
             else if (ks == XK_equal) diag_in = std::min(400.f, diag_in + 10.f);
         }
 
-        // ---- pose (predicted)
+        // ---- pose (predicted, then smoothed)
         float pose[7] = {0};
         if (get_gl_pose_carina(g_provider, pose, double(predict_ms) * 1e6) == 0) {
-            head_p = { pose[0], pose[1], pose[2] };
-            head_q = { pose[3], pose[4], pose[5], pose[6] };
-            if (!have_pose) { have_pose = true; ori_offset = yaw_twist(head_q); place_screen(); }
+            Vec3 rp = { pose[0], pose[1], pose[2] };
+            Quat rq = { pose[3], pose[4], pose[5], pose[6] };
+            if (!have_pose) {
+                head_p = rp;
+                head_q = rq;
+                have_pose = true;
+                ori_offset = yaw_twist(head_q);
+                place_screen();
+            } else {
+                // Speed-adaptive position filter: strong damping only while
+                // near-still; real translation passes through with little lag.
+                float dx = rp.x - head_p.x, dy = rp.y - head_p.y, dz = rp.z - head_p.z;
+                float dist_step = std::sqrt(dx * dx + dy * dy + dz * dz);
+                float ap = std::min(0.8f, smooth_pos * 0.6f + dist_step * 40.f);
+                head_p.x += dx * ap;
+                head_p.y += dy * ap;
+                head_p.z += dz * ap;
+                // nlerp along the shortest arc, with speed-adaptive blending
+                // (One-Euro style): near-still → heavy filtering kills the
+                // shimmer; fast turns → near-raw so tracking stays snappy.
+                float dot = head_q.w * rq.w + head_q.x * rq.x + head_q.y * rq.y + head_q.z * rq.z;
+                float sign = dot < 0 ? -1.f : 1.f;
+                float ang = 2.f * std::acos(std::min(1.f, std::fabs(dot))) * 180.f / float(M_PI);
+                // Velocity term dominates quickly: shimmer-damping at rest,
+                // near-raw tracking as soon as the head actually turns.
+                float a = std::min(0.95f, smooth_ori * 0.25f + ang * 1.2f);
+                head_q.w += (rq.w * sign - head_q.w) * a;
+                head_q.x += (rq.x * sign - head_q.x) * a;
+                head_q.y += (rq.y * sign - head_q.y) * a;
+                head_q.z += (rq.z * sign - head_q.z) * a;
+                float m = std::sqrt(head_q.w * head_q.w + head_q.x * head_q.x +
+                                    head_q.y * head_q.y + head_q.z * head_q.z);
+                if (m > 1e-6f) { head_q.w /= m; head_q.x /= m; head_q.y /= m; head_q.z /= m; }
+            }
+        }
+
+        // ---- 6DoF liveness over a ~1 s window
+        if (have_pose) {
+            if (win_n == 0) { win_min = win_max = head_p; win_q0 = head_q; win_max_ang = 0; }
+            win_min.x = std::min(win_min.x, head_p.x); win_max.x = std::max(win_max.x, head_p.x);
+            win_min.y = std::min(win_min.y, head_p.y); win_max.y = std::max(win_max.y, head_p.y);
+            win_min.z = std::min(win_min.z, head_p.z); win_max.z = std::max(win_max.z, head_p.z);
+            float d = std::fabs(win_q0.w * head_q.w + win_q0.x * head_q.x +
+                                win_q0.y * head_q.y + win_q0.z * head_q.z);
+            win_max_ang = std::max(win_max_ang,
+                                   2.f * std::acos(std::min(1.f, d)) * 180.f / float(M_PI));
+            if (++win_n >= 120) {
+                float pos_range = std::max({ win_max.x - win_min.x, win_max.y - win_min.y,
+                                             win_max.z - win_min.z });
+                if (pos_range > 0.02f) sixdof_live = true;            // clear translation
+                else if (win_max_ang > 8.f) sixdof_live = false;      // moving head, dead position
+                win_n = 0;
+            }
         }
 
         // ---- capture (30 Hz is plenty; pose stays at panel rate)
@@ -367,7 +462,9 @@ int main(int argc, char** argv) {
 
         // ---- render
         glViewport(0, 0, glasses.w, glasses.h);
-        glClearColor(0.03f, 0.04f, 0.07f, 1);
+        // True black: on the OLED panel black pixels are OFF, i.e. fully
+        // transparent in the glasses — anything brighter shows as a haze.
+        glClearColor(0.f, 0.f, 0.f, 1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glEnable(GL_DEPTH_TEST);
 
@@ -407,8 +504,10 @@ int main(int argc, char** argv) {
             glEnd();
             glDisable(GL_TEXTURE_2D);
 
-            // thin frame for depth perception
-            glColor3f(0.35f, 0.76f, 1.f);
+            // thin frame for depth perception; orange warns that positional
+            // tracking is frozen (orientation-only mode)
+            if (sixdof_live) glColor3f(0.35f, 0.76f, 1.f);
+            else glColor3f(1.f, 0.55f, 0.2f);
             glLineWidth(2);
             glBegin(GL_LINE_LOOP);
             glVertex3f(-w2, -h2, 0); glVertex3f(w2, -h2, 0);
@@ -419,8 +518,10 @@ int main(int argc, char** argv) {
         glXSwapBuffers(dpy, win);
         frames++;
         if (tnow - last_fps_t >= 2.0) {
-            printf("fps %.0f  pose %s  dist %.2fm  size %.0f\"\n",
-                   frames / (tnow - last_fps_t), have_pose ? "ok" : "waiting", distance, diag_in);
+            printf("fps %.0f  pose %s  6dof %s  head [%+.3f %+.3f %+.3f]m  dist %.2fm  size %.0f\"\n",
+                   frames / (tnow - last_fps_t), have_pose ? "ok" : "waiting",
+                   sixdof_live ? "LIVE" : "frozen",
+                   head_p.x, head_p.y, head_p.z, distance, diag_in);
             frames = 0;
             last_fps_t = tnow;
         }
