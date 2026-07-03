@@ -412,7 +412,7 @@ int main(int argc, char** argv) {
                 // near-still; real translation passes through with little lag.
                 float dx = rp.x - head_p.x, dy = rp.y - head_p.y, dz = rp.z - head_p.z;
                 float dist_step = std::sqrt(dx * dx + dy * dy + dz * dz);
-                float ap = std::min(0.8f, smooth_pos * 0.6f + dist_step * 40.f);
+                float ap = std::min(0.9f, smooth_pos * 1.5f + dist_step * 80.f);
                 head_p.x += dx * ap;
                 head_p.y += dy * ap;
                 head_p.z += dz * ap;
