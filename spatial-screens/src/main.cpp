@@ -46,6 +46,7 @@
 #include "viture_device_carina.h"
 #include "vk_renderer.h"
 #include "vk_surface.h"
+#include "gesture_client.h"
 
 // ---------------------------------------------------------------- math ----
 
@@ -117,6 +118,7 @@ static XRDeviceProviderHandle g_provider = nullptr;
 static std::atomic<bool> g_running{true};
 static bool g_probe_camera = false;
 static int g_probe_frames_remaining = 0;
+static GestureClient g_gestures;
 
 static void on_imu_noop(float*, double) {}
 static void on_pose_noop(float*, double) {}
@@ -124,18 +126,20 @@ static void on_pose_noop(float*, double) {}
 static void on_camera_carina(char* image_left0, char* /*image_right0*/,
                               char* /*image_left1*/, char* /*image_right1*/,
                               double timestamp, int width, int height) {
-    if (!g_probe_camera || g_probe_frames_remaining <= 0) return;
-    static int frame_idx = 0;
-    char path[256];
-    snprintf(path, sizeof(path), "/tmp/spatial-screens-probe-%03d.pgm", frame_idx++);
-    FILE* f = fopen(path, "wb");
-    if (f) {
-        fprintf(f, "P5\n%d %d\n255\n", width, height);
-        fwrite(image_left0, 1, size_t(width) * size_t(height), f);
-        fclose(f);
-        printf("gestures: probe frame -> %s (%dx%d, t=%.3f)\n", path, width, height, timestamp);
+    if (g_probe_camera && g_probe_frames_remaining > 0) {
+        static int frame_idx = 0;
+        char path[256];
+        snprintf(path, sizeof(path), "/tmp/spatial-screens-probe-%03d.pgm", frame_idx++);
+        FILE* f = fopen(path, "wb");
+        if (f) {
+            fprintf(f, "P5\n%d %d\n255\n", width, height);
+            fwrite(image_left0, 1, size_t(width) * size_t(height), f);
+            fclose(f);
+            printf("gestures: probe frame -> %s (%dx%d, t=%.3f)\n", path, width, height, timestamp);
+        }
+        g_probe_frames_remaining--;
     }
-    g_probe_frames_remaining--;
+    g_gestures.maybe_send_frame(reinterpret_cast<uint8_t*>(image_left0), width, height, timestamp);
 }
 
 static int scan_viture_pid() {
@@ -197,6 +201,17 @@ static bool sdk_init() {
     printf("SDK started (pid 0x%04x, Carina 6DoF)\n", pid);
     return true;
 }
+
+static std::string executable_dir() {
+    char buf[4096];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) return ".";
+    buf[n] = 0;
+    std::string path(buf);
+    auto slash = path.find_last_of('/');
+    return slash == std::string::npos ? "." : path.substr(0, slash);
+}
+
 
 // ---------------------------------------------------------------- main ----
 
@@ -387,6 +402,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    std::string gesture_socket = "/tmp/spatial-screens-gestures-" + std::to_string(getpid()) + ".sock";
+    g_gestures.start(gesture_socket, executable_dir() + "/gestures/hand_tracker.py");
+
     // -- projection from the glasses' 52-degree diagonal FOV (16:10 panel)
     const float DIAG_FOV = 52.f;
     // In direct mode the swapchain extent is authoritative (mode may differ
@@ -497,6 +515,9 @@ int main(int argc, char** argv) {
             else if (ks == XK_equal) diag_in = std::min(400.f, diag_in + 10.f);
         }
         if (!g_running) break;
+
+        // ---- gestures (state wired up in Task 8/9)
+        GestureEvent gev = g_gestures.poll();
 
         // ---- pose (predicted, then smoothed)
         float pose[7] = {0};
@@ -645,6 +666,7 @@ int main(int argc, char** argv) {
     }
 
     printf("shutting down…\n");
+    g_gestures.stop();
     xr_device_provider_stop(g_provider);
     xr_device_provider_shutdown(g_provider);
     xr_device_provider_destroy(g_provider);
