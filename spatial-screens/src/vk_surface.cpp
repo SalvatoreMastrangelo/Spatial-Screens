@@ -59,6 +59,7 @@ static void set_non_desktop(Display* dpy, RROutput out_id, long value) {
 
 void direct_restore(Display* dpy) {
     if (!g_saved.prop_set) return;
+    XErrorHandler old_handler = XSetErrorHandler(ignore_x_error);
     set_non_desktop(dpy, g_saved.output, 0);
     if (g_saved.crtc && g_saved.mode) {
         Window root = DefaultRootWindow(dpy);
@@ -66,7 +67,6 @@ void direct_restore(Display* dpy) {
         // drops the fd (instance destruction); until then the CRTC/output
         // stay guarded (BadAccess / RRSetConfigFailed). Swallow X errors and
         // retry the re-enable until the lease is gone (~3 s worst case).
-        XErrorHandler old_handler = XSetErrorHandler(ignore_x_error);
         Status st = RRSetConfigFailed;
         for (int i = 0; i < 30 && st != RRSetConfigSuccess; i++) {
             XRRScreenResources* res = XRRGetScreenResourcesCurrent(dpy, root);
@@ -80,7 +80,6 @@ void direct_restore(Display* dpy) {
         if (st == RRSetConfigSuccess && g_saved.was_primary)
             XRRSetOutputPrimary(dpy, root, g_saved.output);
         XSync(dpy, False);
-        XSetErrorHandler(old_handler);
         if (st == RRSetConfigSuccess)
             printf("direct mode: output returned to the desktop\n");
         else
@@ -89,6 +88,7 @@ void direct_restore(Display* dpy) {
     } else {
         XSync(dpy, False);
     }
+    XSetErrorHandler(old_handler);
     g_saved.prop_set = false;
 }
 
@@ -96,7 +96,11 @@ void direct_release(VkInstance inst) {
     if (!g_saved.display) return;
     auto p_rel = (PFN_vkReleaseDisplayEXT)
         vkGetInstanceProcAddr(inst, "vkReleaseDisplayEXT");
-    if (p_rel) p_rel(g_saved.phys, g_saved.display);
+    if (p_rel) {
+        p_rel(g_saved.phys, g_saved.display);
+    } else {
+        fprintf(stderr, "direct mode: vkReleaseDisplayEXT missing — lease held until exit\n");
+    }
     g_saved.display = VK_NULL_HANDLE;
 }
 
@@ -190,6 +194,7 @@ bool direct_acquire(Display* dpy, VkInstance inst, RROutput out_id, SurfaceOut& 
     vkGetDisplayModePropertiesKHR(phys, display, &nmode, modes.data());
     if (!nmode) {
         fprintf(stderr, "direct mode: display exposes no modes\n");
+        direct_release(inst);
         direct_restore(dpy);
         return false;
     }
@@ -220,6 +225,7 @@ bool direct_acquire(Display* dpy, VkInstance inst, RROutput out_id, SurfaceOut& 
     }
     if (plane == UINT32_MAX) {
         fprintf(stderr, "direct mode: no display plane supports this output\n");
+        direct_release(inst);
         direct_restore(dpy);
         return false;
     }
@@ -242,6 +248,7 @@ bool direct_acquire(Display* dpy, VkInstance inst, RROutput out_id, SurfaceOut& 
     VkResult sr = vkCreateDisplayPlaneSurfaceKHR(inst, &sci, nullptr, &out.surface);
     if (sr != VK_SUCCESS) {
         fprintf(stderr, "direct mode: display surface creation failed (%d)\n", sr);
+        direct_release(inst);
         direct_restore(dpy);
         return false;
     }
