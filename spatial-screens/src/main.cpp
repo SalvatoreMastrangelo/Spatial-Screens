@@ -20,6 +20,7 @@
 
 #include <GL/glx.h>
 #include <GL/gl.h>
+#include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/extensions/XShm.h>
@@ -188,7 +189,8 @@ int main(int argc, char** argv) {
     // and the world visible around it, which is what makes 6DoF perceivable.
     // predict 0 by default: XRLinuxDriver's known-good usage passes 0, and
     // extrapolation visibly amplifies rotation jitter during head turns.
-    float distance = 2.0f, diag_in = 60.f, pitch_trim = 0.f, predict_ms = 0.f;
+    // 24" at 0.75 m = desk-monitor ergonomics that fit the 52-degree FOV.
+    float distance = 0.75f, diag_in = 24.f, pitch_trim = 0.f, predict_ms = 0.f;
     // Pose smoothing (EMA blend factor per frame, 1 = off). Position gets a
     // heavy filter — VIO translation is where the jitter lives; orientation
     // stays light so head tracking doesn't feel laggy.
@@ -263,6 +265,15 @@ int main(int argc, char** argv) {
     Window win = XCreateWindow(dpy, root, glasses.x, glasses.y, glasses.w, glasses.h, 0,
                                vi->depth, InputOutput, vi->visual,
                                CWColormap | CWOverrideRedirect | CWEventMask, &swa);
+    // Ask the compositor to unredirect us: on multi-monitor X11 the
+    // compositor paces frames to one monitor's clock, tearing the others.
+    // Bypassing it lets our SwapBuffers sync directly to the glasses' CRTC.
+    {
+        Atom bypass = XInternAtom(dpy, "_NET_WM_BYPASS_COMPOSITOR", False);
+        long value = 1;
+        XChangeProperty(dpy, win, bypass, XA_CARDINAL, 32, PropModeReplace,
+                        (unsigned char*)&value, 1);
+    }
     XMapRaised(dpy, win);
     XMoveResizeWindow(dpy, win, glasses.x, glasses.y, glasses.w, glasses.h);
     XSetInputFocus(dpy, win, RevertToParent, CurrentTime);
