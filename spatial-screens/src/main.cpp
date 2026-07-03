@@ -93,6 +93,7 @@ static void mat_from_pose(const Quat& q, const Vec3& t, float* m) {
 
 static XRDeviceProviderHandle g_provider = nullptr;
 static std::atomic<bool> g_running{true};
+static bool g_want_sgi = false;
 
 static void on_imu_noop(float*, double) {}
 static void on_pose_noop(float*, double) {}
@@ -207,6 +208,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--predict-ms")) next(predict_ms);
         else if (!strcmp(argv[i], "--smooth-pos")) next(smooth_pos);
         else if (!strcmp(argv[i], "--smooth-ori")) next(smooth_ori);
+        else if (!strcmp(argv[i], "--sgi-sync")) g_want_sgi = true;
         else {
             printf("usage: %s [--monitor NAME] [--capture NAME|test] [--distance M] "
                    "[--size IN] [--pitch-trim DEG] [--predict-ms MS] "
@@ -320,7 +322,10 @@ int main(int argc, char** argv) {
     auto sgi_get = (SgiGetProc)glXGetProcAddress((const GLubyte*)"glXGetVideoSyncSGI");
     auto sgi_wait = (SgiWaitProc)glXGetProcAddress((const GLubyte*)"glXWaitVideoSyncSGI");
     unsigned int vsync_count = 0;
-    bool use_sgi = sgi_get && sgi_wait && sgi_get(&vsync_count) == 0;
+    // Opt-in only (--sgi-sync): on this multi-monitor Mesa setup the SGI
+    // counter does not track the glasses' CRTC — it dropped 120 fps to ~80
+    // with no tearing improvement. Kept for experimentation on other rigs.
+    bool use_sgi = g_want_sgi && sgi_get && sgi_wait && sgi_get(&vsync_count) == 0;
     typedef void (*SwapIntervalProc)(Display*, GLXDrawable, int);
     if (auto p = (SwapIntervalProc)glXGetProcAddress((const GLubyte*)"glXSwapIntervalEXT"))
         p(dpy, win, use_sgi ? 0 : 1);
