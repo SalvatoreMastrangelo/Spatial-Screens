@@ -408,11 +408,20 @@ int main(int argc, char** argv) {
                 ori_offset = yaw_twist(head_q);
                 place_screen();
             } else {
-                // Speed-adaptive position filter: strong damping only while
-                // near-still; real translation passes through with little lag.
+                // One-Euro position filter: the cutoff follows a SMOOTHED
+                // speed estimate, so mm-level VIO noise spikes cannot open
+                // the filter (no wiggle at rest) while sustained real motion
+                // opens it within ~100 ms (little perceived lag).
+                static float speed_hat = 0;
+                const float Te = 1.f / 120.f;
                 float dx = rp.x - head_p.x, dy = rp.y - head_p.y, dz = rp.z - head_p.z;
-                float dist_step = std::sqrt(dx * dx + dy * dy + dz * dz);
-                float ap = std::min(0.9f, smooth_pos * 1.5f + dist_step * 80.f);
+                float speed = std::sqrt(dx * dx + dy * dy + dz * dz) / Te; // m/s
+                const float d_cutoff = 1.f; // Hz — how fast the speed estimate reacts
+                float ad = 1.f / (1.f + 1.f / (2.f * float(M_PI) * d_cutoff * Te));
+                speed_hat += (speed - speed_hat) * ad;
+                float min_cutoff = smooth_pos * 4.f; // default 0.10 → 0.4 Hz at rest
+                float cutoff = min_cutoff + 4.f * speed_hat;
+                float ap = 1.f / (1.f + 1.f / (2.f * float(M_PI) * cutoff * Te));
                 head_p.x += dx * ap;
                 head_p.y += dy * ap;
                 head_p.z += dz * ap;
