@@ -11,6 +11,10 @@
 #include <cstring>
 #include <unistd.h>
 
+// Restore races the server's async lease teardown; RandR calls during the
+// window raise BadAccess, which must not kill the process mid-restore.
+static int ignore_x_error(Display*, XErrorEvent*) { return 0; }
+
 std::vector<OutputRect> list_outputs(Display* dpy) {
     std::vector<OutputRect> out;
     Window root = DefaultRootWindow(dpy);
@@ -54,20 +58,36 @@ static void set_non_desktop(Display* dpy, RROutput out_id, long value) {
 void direct_restore(Display* dpy) {
     if (!g_saved.prop_set) return;
     set_non_desktop(dpy, g_saved.output, 0);
-    // Belt and suspenders: Mutter usually re-adopts the output on its own
-    // once non-desktop drops; explicitly restore the old CRTC config too.
     if (g_saved.crtc && g_saved.mode) {
         Window root = DefaultRootWindow(dpy);
-        XRRScreenResources* res = XRRGetScreenResourcesCurrent(dpy, root);
-        XRRSetCrtcConfig(dpy, res, g_saved.crtc, CurrentTime,
-                         g_saved.x, g_saved.y, g_saved.mode, g_saved.rot,
-                         g_saved.crtc_outputs.data(), (int)g_saved.crtc_outputs.size());
-        if (g_saved.was_primary) XRRSetOutputPrimary(dpy, root, g_saved.output);
-        XRRFreeScreenResources(res);
+        // The server tears the lease down asynchronously after the client
+        // drops the fd (instance destruction); until then the CRTC/output
+        // stay guarded (BadAccess / RRSetConfigFailed). Swallow X errors and
+        // retry the re-enable until the lease is gone (~3 s worst case).
+        XErrorHandler old_handler = XSetErrorHandler(ignore_x_error);
+        Status st = RRSetConfigFailed;
+        for (int i = 0; i < 30 && st != RRSetConfigSuccess; i++) {
+            XRRScreenResources* res = XRRGetScreenResourcesCurrent(dpy, root);
+            st = XRRSetCrtcConfig(dpy, res, g_saved.crtc, CurrentTime,
+                                  g_saved.x, g_saved.y, g_saved.mode, g_saved.rot,
+                                  g_saved.crtc_outputs.data(),
+                                  (int)g_saved.crtc_outputs.size());
+            XRRFreeScreenResources(res);
+            if (st != RRSetConfigSuccess) usleep(100 * 1000);
+        }
+        if (st == RRSetConfigSuccess && g_saved.was_primary)
+            XRRSetOutputPrimary(dpy, root, g_saved.output);
+        XSync(dpy, False);
+        XSetErrorHandler(old_handler);
+        if (st == RRSetConfigSuccess)
+            printf("direct mode: output returned to the desktop\n");
+        else
+            fprintf(stderr, "direct mode: could not re-enable the output — "
+                            "run: xrandr --output <name> --auto\n");
+    } else {
+        XSync(dpy, False);
     }
-    XSync(dpy, False);
     g_saved.prop_set = false;
-    printf("direct mode: output returned to the desktop\n");
 }
 
 bool direct_acquire(Display* dpy, VkInstance inst, RROutput out_id, SurfaceOut& out) {
