@@ -9,10 +9,16 @@ LDFLAGS := -L$(SDK_LIB) -lglasses $(VK_LIBS) -lpthread \
 	-Wl,--allow-shlib-undefined
 
 SHADER_HDRS := shaders/quad.vert.spv.h shaders/quad.frag.spv.h
-OBJS := src/main.o src/vk_renderer.o src/vk_surface.o
+OBJS := src/main.o src/vk_renderer.o src/vk_surface.o src/gesture_client.o
 
 spatial-screens: $(OBJS)
 	$(CXX) $(OBJS) -o $@ $(LDFLAGS)
+
+# gesture_client doesn't touch Vulkan or the shaders — lighter prereqs.
+src/gesture_client.o: src/gesture_client.cpp src/gesture_client.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+src/main.o: src/gesture_client.h
 
 src/%.o: src/%.cpp $(SHADER_HDRS) src/vk_renderer.h src/vk_surface.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
