@@ -68,6 +68,8 @@ int main(int argc, char** argv) {
     const uint32_t TW = 512, TH = 512;
     if (!vkr_init_device(vk) || !vkr_init_swapchain(vk) || !vkr_init_pipeline(vk) ||
         !vkr_init_texture(vk, TW, TH, TW * 4)) {
+        vkr_destroy_device(vk);
+        if (sout.direct) direct_release(vk.instance);
         vkr_destroy(vk);
         if (sout.direct) direct_restore(dpy);
         return 1;
@@ -110,6 +112,8 @@ int main(int argc, char** argv) {
     double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     printf("%d frames in %.1f s = %.1f fps\n", frames, el, frames / el);
 
+    vkr_destroy_device(vk);
+    if (sout.direct) direct_release(vk.instance);
     vkr_destroy(vk);
     if (sout.direct) direct_restore(dpy);
     else if (sout.window) XDestroyWindow(dpy, sout.window);

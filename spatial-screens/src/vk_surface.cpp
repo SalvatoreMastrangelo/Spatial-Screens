@@ -45,6 +45,8 @@ static struct {
     Rotation rot = RR_Rotate_0;
     std::vector<RROutput> crtc_outputs;
     bool was_primary = false;
+    VkPhysicalDevice phys = VK_NULL_HANDLE;
+    VkDisplayKHR display = VK_NULL_HANDLE;
 } g_saved;
 
 static void set_non_desktop(Display* dpy, RROutput out_id, long value) {
@@ -88,6 +90,14 @@ void direct_restore(Display* dpy) {
         XSync(dpy, False);
     }
     g_saved.prop_set = false;
+}
+
+void direct_release(VkInstance inst) {
+    if (!g_saved.display) return;
+    auto p_rel = (PFN_vkReleaseDisplayEXT)
+        vkGetInstanceProcAddr(inst, "vkReleaseDisplayEXT");
+    if (p_rel) p_rel(g_saved.phys, g_saved.display);
+    g_saved.display = VK_NULL_HANDLE;
 }
 
 bool direct_acquire(Display* dpy, VkInstance inst, RROutput out_id, SurfaceOut& out) {
@@ -170,6 +180,8 @@ bool direct_acquire(Display* dpy, VkInstance inst, RROutput out_id, SurfaceOut& 
         direct_restore(dpy);
         return false;
     }
+    g_saved.phys = phys;
+    g_saved.display = display;
 
     // Mode: native resolution at the highest refresh (spec: 1920x1200@120).
     uint32_t nmode = 0;

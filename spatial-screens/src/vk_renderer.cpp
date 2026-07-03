@@ -550,7 +550,7 @@ bool vkr_draw(VkRend& r, const QuadDraw* draws, int n) {
     return true;
 }
 
-void vkr_destroy(VkRend& r) {
+void vkr_destroy_device(VkRend& r) {
     if (r.device) {
         vkDeviceWaitIdle(r.device);
         vkr_destroy_texture(r);
@@ -571,8 +571,13 @@ void vkr_destroy(VkRend& r) {
     }
     if (r.surface) vkDestroySurfaceKHR(r.instance, r.surface, nullptr);
     r.surface = VK_NULL_HANDLE;
-    // Destroying the instance also releases a directly-acquired display
-    // (drops the RandR lease fd) — direct_restore() must run AFTER this.
+}
+
+void vkr_destroy(VkRend& r) {
+    vkr_destroy_device(r);
+    // NOTE: instance destruction alone does NOT drop a direct-display lease
+    // (Mesa keeps the lease fd for the process lifetime) — the direct
+    // backend must call direct_release() before this.
     if (r.instance) vkDestroyInstance(r.instance, nullptr);
     r.instance = VK_NULL_HANDLE;
 }

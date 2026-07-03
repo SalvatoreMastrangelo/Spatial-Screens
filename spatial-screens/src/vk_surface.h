@@ -27,4 +27,8 @@ struct SurfaceOut {
 
 bool direct_acquire(Display* dpy, VkInstance inst, RROutput out_id, SurfaceOut& out);
 void direct_restore(Display* dpy);
+// Release the leased display back to the X server. Call after
+// vkr_destroy_device() (swapchain/surface must be gone) and before
+// vkr_destroy() (needs the live instance). Then call direct_restore().
+void direct_release(VkInstance inst);
 bool window_create(Display* dpy, VkInstance inst, int x, int y, int w, int h, SurfaceOut& out);

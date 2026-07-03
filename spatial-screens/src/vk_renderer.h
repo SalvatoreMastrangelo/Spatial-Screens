@@ -64,3 +64,8 @@ void vkr_destroy_texture(VkRend& r);
 void vkr_upload(VkRend& r, const void* pixels, size_t bytes);
 bool vkr_draw(VkRend& r, const QuadDraw* draws, int n);
 void vkr_destroy(VkRend& r);
+
+// Device-level teardown only (waits idle; destroys swapchain, pipeline,
+// texture, device, surface — leaves the instance alive). For the direct
+// backend: call this, then direct_release(), then vkr_destroy().
+void vkr_destroy_device(VkRend& r);
