@@ -4,3 +4,4 @@ reference/
 bridge/viture-bridge
 *.o
 .DS_Store
+spatial-screens/spatial-screens

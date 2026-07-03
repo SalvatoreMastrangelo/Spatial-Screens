@@ -64,6 +64,10 @@ MCU/state events as they arrive.
 
 ## Repo layout
 
+- `spatial-screens/` — **phase 2** (in progress): world-anchored virtual screen
+  renderer — 6DoF pose → fullscreen GL on the glasses, live X11 monitor
+  capture, recenter/distance/size hotkeys (see its README; stop the bridge
+  before running it)
 - `sensor-viz/` — web app (Vite + Three.js, no other runtime deps)
 - `bridge/` — native daemon: official SDK → WebSocket JSON (see header of
   `bridge/main.cpp` for the message protocol)
