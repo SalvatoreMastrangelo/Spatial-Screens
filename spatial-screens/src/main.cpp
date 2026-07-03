@@ -13,13 +13,14 @@
 //        Q/Esc  quit
 //
 // NOTE: stop viture-bridge before running — the SDK supports one client.
+// Presentation: Vulkan direct display by default (RandR non-desktop=1 +
+// VK_EXT_acquire_xlib_display leases the glasses output straight from
+// Mesa). --window forces the EWMH-fullscreen windowed fallback instead.
 //
 // Coordinates: get_gl_pose_carina returns Twb in OpenGL/EUS (x right, y up,
 // z backward), position in meters. World-locked content = render with
 // view = inverse(head pose).
 
-#include <GL/glx.h>
-#include <GL/gl.h>
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -43,6 +44,8 @@
 
 #include "viture_glasses_provider.h"
 #include "viture_device_carina.h"
+#include "vk_renderer.h"
+#include "vk_surface.h"
 
 // ---------------------------------------------------------------- math ----
 
@@ -89,11 +92,29 @@ static void mat_from_pose(const Quat& q, const Vec3& t, float* m) {
     m[3] = 0;                 m[7] = 0;                 m[11] = 0;                 m[15] = 1;
 }
 
+// out = a * b (column-major 4x4)
+static void mat_mul(const float* a, const float* b, float* out) {
+    for (int c = 0; c < 4; c++)
+        for (int r = 0; r < 4; r++)
+            out[c * 4 + r] = a[0 * 4 + r] * b[c * 4 + 0] + a[1 * 4 + r] * b[c * 4 + 1] +
+                             a[2 * 4 + r] * b[c * 4 + 2] + a[3 * 4 + r] * b[c * 4 + 3];
+}
+
+// Symmetric perspective for Vulkan clip space (y-down, z in [0,1]);
+// rr/tt are frustum half-extents at the near plane, as for glFrustum.
+static void mat_projection_vk(float rr, float tt, float n, float f, float* m) {
+    memset(m, 0, 16 * sizeof(float));
+    m[0] = n / rr;
+    m[5] = -n / tt;
+    m[10] = f / (n - f);
+    m[11] = -1.f;
+    m[14] = n * f / (n - f);
+}
+
 // ------------------------------------------------------------- SDK glue ----
 
 static XRDeviceProviderHandle g_provider = nullptr;
 static std::atomic<bool> g_running{true};
-static bool g_want_sgi = false;
 
 static void on_imu_noop(float*, double) {}
 static void on_pose_noop(float*, double) {}
@@ -158,27 +179,6 @@ static bool sdk_init() {
     return true;
 }
 
-// ------------------------------------------------------------- X11/RandR ----
-
-struct OutputRect { std::string name; int x, y, w, h; };
-
-static std::vector<OutputRect> list_outputs(Display* dpy) {
-    std::vector<OutputRect> out;
-    Window root = DefaultRootWindow(dpy);
-    XRRScreenResources* res = XRRGetScreenResourcesCurrent(dpy, root);
-    for (int i = 0; i < res->noutput; i++) {
-        XRROutputInfo* oi = XRRGetOutputInfo(dpy, res, res->outputs[i]);
-        if (oi->connection == RR_Connected && oi->crtc) {
-            XRRCrtcInfo* ci = XRRGetCrtcInfo(dpy, res, oi->crtc);
-            out.push_back({ oi->name, ci->x, ci->y, int(ci->width), int(ci->height) });
-            XRRFreeCrtcInfo(ci);
-        }
-        XRRFreeOutputInfo(oi);
-    }
-    XRRFreeScreenResources(res);
-    return out;
-}
-
 // ---------------------------------------------------------------- main ----
 
 static void on_signal(int) { g_running = false; }
@@ -198,6 +198,7 @@ int main(int argc, char** argv) {
     // heavy filter — VIO translation is where the jitter lives; orientation
     // stays light so head tracking doesn't feel laggy.
     float smooth_pos = 0.10f, smooth_ori = 0.40f;
+    bool force_window = false;
     for (int i = 1; i < argc; i++) {
         auto next = [&](float& v) { if (i + 1 < argc) v = atof(argv[++i]); };
         if (!strcmp(argv[i], "--monitor") && i + 1 < argc) monitor_name = argv[++i];
@@ -208,11 +209,11 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--predict-ms")) next(predict_ms);
         else if (!strcmp(argv[i], "--smooth-pos")) next(smooth_pos);
         else if (!strcmp(argv[i], "--smooth-ori")) next(smooth_ori);
-        else if (!strcmp(argv[i], "--sgi-sync")) g_want_sgi = true;
+        else if (!strcmp(argv[i], "--window")) force_window = true;
         else {
             printf("usage: %s [--monitor NAME] [--capture NAME|test] [--distance M] "
                    "[--size IN] [--pitch-trim DEG] [--predict-ms MS] "
-                   "[--smooth-pos 0..1] [--smooth-ori 0..1]\n", argv[0]);
+                   "[--smooth-pos 0..1] [--smooth-ori 0..1] [--window]\n", argv[0]);
             return 0;
         }
     }
@@ -258,41 +259,44 @@ int main(int argc, char** argv) {
     printf("glasses: %s (%dx%d)  capture: %s\n", glasses.name.c_str(), glasses.w, glasses.h,
            test_pattern ? "test pattern" : source.name.c_str());
 
-    // -- GLX window on the glasses output
-    GLint visAttrs[] = { GLX_RGBA, GLX_DEPTH_SIZE, 16, GLX_DOUBLEBUFFER, None };
-    XVisualInfo* vi = glXChooseVisual(dpy, DefaultScreen(dpy), visAttrs);
-    if (!vi) { fprintf(stderr, "no GLX visual\n"); return 1; }
-    XSetWindowAttributes swa{};
-    swa.colormap = XCreateColormap(dpy, root, vi->visual, AllocNone);
-    swa.event_mask = KeyPressMask | StructureNotifyMask;
-    // A managed EWMH-fullscreen window, NOT override-redirect: Mutter's
-    // unredirect fast path (direct per-CRTC page flips, tear-free) only
-    // engages for proper fullscreen windows — OR windows stay composited on
-    // the primary monitor's clock and tear on every other output.
-    Window win = XCreateWindow(dpy, root, glasses.x, glasses.y, glasses.w, glasses.h, 0,
-                               vi->depth, InputOutput, vi->visual,
-                               CWColormap | CWEventMask, &swa);
-    XStoreName(dpy, win, "spatial-screens");
-    {
-        Atom wm_state = XInternAtom(dpy, "_NET_WM_STATE", False);
-        Atom wm_fs = XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", False);
-        XChangeProperty(dpy, win, wm_state, XA_ATOM, 32, PropModeReplace,
-                        (unsigned char*)&wm_fs, 1);
+    // -- Vulkan: direct display (default) or EWMH-fullscreen window fallback
+    VkRend vk{};
+    if (!vkr_create_instance(vk, !force_window)) return 1;
+    SurfaceOut sout{};
+    bool direct_ok = !force_window && vk.has_display_ext &&
+                     direct_acquire(dpy, vk.instance, glasses.id, sout);
+    if (!direct_ok) {
+        if (!force_window) fprintf(stderr, "direct mode unavailable — window fallback\n");
+        // direct_acquire restores the desktop on failure, but the layout may
+        // have shifted meanwhile — re-resolve the glasses rect first.
+        outputs = list_outputs(dpy);
+        for (auto& o : outputs) if (o.name == glasses.name) { glasses = o; break; }
+        if (!window_create(dpy, vk.instance, glasses.x, glasses.y, glasses.w, glasses.h, sout))
+            return 1;
     }
-    // Ask the compositor to unredirect us: on multi-monitor X11 the
-    // compositor paces frames to one monitor's clock, tearing the others.
-    // Bypassing it lets our SwapBuffers sync directly to the glasses' CRTC.
-    {
-        Atom bypass = XInternAtom(dpy, "_NET_WM_BYPASS_COMPOSITOR", False);
-        long value = 1;
-        XChangeProperty(dpy, win, bypass, XA_CARDINAL, 32, PropModeReplace,
-                        (unsigned char*)&value, 1);
+    vk.phys = sout.phys;
+    vk.surface = sout.surface;
+    if (!vkr_init_device(vk) || !vkr_init_swapchain(vk) || !vkr_init_pipeline(vk)) {
+        vkr_destroy_device(vk);
+        if (sout.direct) direct_release(vk.instance);
+        vkr_destroy(vk);
+        if (sout.direct) direct_restore(dpy);
+        return 1;
     }
-    XMapRaised(dpy, win);
-    XMoveResizeWindow(dpy, win, glasses.x, glasses.y, glasses.w, glasses.h);
-    // No XSetInputFocus: a managed window maps asynchronously (BadMatch if
-    // not yet viewable) and the WM focuses fullscreen windows on its own;
-    // controls use global Ctrl+Alt hotkeys regardless.
+    // Direct mode reflowed the desktop: the capture source rect moved.
+    if (sout.direct && !test_pattern) {
+        outputs = list_outputs(dpy);
+        bool still_there = false;
+        for (auto& o : outputs)
+            if (o.name == source.name) { source = o; still_there = true; break; }
+        if (!still_there) {
+            printf("capture source disappeared — falling back to test pattern\n");
+            test_pattern = true;
+        }
+    }
+    int rr_event_base = 0, rr_error_base = 0;
+    XRRQueryExtension(dpy, &rr_event_base, &rr_error_base);
+    XRRSelectInput(dpy, root, RRScreenChangeNotifyMask);
 
     // Global hotkeys (Ctrl+Alt+key) — focus on an override-redirect window is
     // unreliable, and the MVP wants a global recenter shortcut anyway. Grab
@@ -311,31 +315,13 @@ int main(int argc, char** argv) {
             }
         }
     }
-    GLXContext ctx = glXCreateContext(dpy, vi, nullptr, True);
-    glXMakeCurrent(dpy, win, ctx);
-
-    // Sync strategy: prefer explicit vblank waits (GLX_SGI_video_sync) with
-    // swap interval 0 — the interval-1 path has torn on this output through
-    // every compositor configuration tried. Fall back to interval 1.
-    typedef int (*SgiGetProc)(unsigned int*);
-    typedef int (*SgiWaitProc)(int, int, unsigned int*);
-    auto sgi_get = (SgiGetProc)glXGetProcAddress((const GLubyte*)"glXGetVideoSyncSGI");
-    auto sgi_wait = (SgiWaitProc)glXGetProcAddress((const GLubyte*)"glXWaitVideoSyncSGI");
-    unsigned int vsync_count = 0;
-    // Opt-in only (--sgi-sync): on this multi-monitor Mesa setup the SGI
-    // counter does not track the glasses' CRTC — it dropped 120 fps to ~80
-    // with no tearing improvement. Kept for experimentation on other rigs.
-    bool use_sgi = g_want_sgi && sgi_get && sgi_wait && sgi_get(&vsync_count) == 0;
-    typedef void (*SwapIntervalProc)(Display*, GLXDrawable, int);
-    if (auto p = (SwapIntervalProc)glXGetProcAddress((const GLubyte*)"glXSwapIntervalEXT"))
-        p(dpy, win, use_sgi ? 0 : 1);
-    printf("vblank sync: %s\n", use_sgi ? "explicit (SGI_video_sync)" : "swap interval");
 
     // -- capture setup (XShm full-source-monitor grabs)
     XShmSegmentInfo shm{};
     XImage* ximg = nullptr;
     if (!test_pattern) {
-        ximg = XShmCreateImage(dpy, vi->visual, 24, ZPixmap, nullptr, &shm, source.w, source.h);
+        ximg = XShmCreateImage(dpy, DefaultVisual(dpy, DefaultScreen(dpy)), 24,
+                               ZPixmap, nullptr, &shm, source.w, source.h);
         shm.shmid = shmget(IPC_PRIVATE, size_t(ximg->bytes_per_line) * ximg->height, IPC_CREAT | 0600);
         shm.shmaddr = ximg->data = (char*)shmat(shm.shmid, nullptr, 0);
         shm.readOnly = False;
@@ -343,24 +329,34 @@ int main(int argc, char** argv) {
         shmctl(shm.shmid, IPC_RMID, nullptr); // auto-free on detach
     }
 
-    // -- texture
+    // -- capture texture
     int tex_w = test_pattern ? 1024 : source.w;
     int tex_h = test_pattern ? 576 : source.h;
-    GLuint tex;
-    glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, tex_w, tex_h, 0, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
+    uint32_t tex_pitch = test_pattern ? uint32_t(tex_w) * 4
+                                      : uint32_t(ximg->bytes_per_line);
+    if (!vkr_init_texture(vk, tex_w, tex_h, tex_pitch)) {
+        vkr_destroy_device(vk);
+        if (sout.direct) direct_release(vk.instance);
+        vkr_destroy(vk);
+        if (sout.direct) direct_restore(dpy);
+        return 1;
+    }
     std::vector<uint32_t> pattern(size_t(tex_w) * tex_h);
 
     // -- SDK last (it takes a second; window is already up)
-    if (!sdk_init()) return 1;
+    if (!sdk_init()) {
+        vkr_destroy_device(vk);
+        if (sout.direct) direct_release(vk.instance);
+        vkr_destroy(vk);
+        if (sout.direct) direct_restore(dpy);
+        return 1;
+    }
 
     // -- projection from the glasses' 52-degree diagonal FOV (16:10 panel)
     const float DIAG_FOV = 52.f;
+    // In direct mode the swapchain extent is authoritative (mode may differ
+    // from the desktop rect we detected).
+    if (sout.direct) { glasses.w = int(vk.extent.width); glasses.h = int(vk.extent.height); }
     float diag_px = std::sqrt(float(glasses.w * glasses.w + glasses.h * glasses.h));
     float half = std::tan(DIAG_FOV * float(M_PI) / 360.f);
     float near_z = 0.1f, far_z = 100.f;
@@ -408,6 +404,39 @@ int main(int argc, char** argv) {
         while (XPending(dpy)) {
             XEvent ev;
             XNextEvent(dpy, &ev);
+            if (ev.type == rr_event_base + RRScreenChangeNotify) {
+                XRRUpdateConfiguration(&ev);
+                if (!test_pattern) {
+                    auto outs = list_outputs(dpy);
+                    for (auto& o : outs) {
+                        if (o.name != source.name) continue;
+                        if (o.w != source.w || o.h != source.h) {
+                            // Source resized: rebuild the XShm segment + texture.
+                            XShmDetach(dpy, &shm);
+                            XDestroyImage(ximg);
+                            shmdt(shm.shmaddr);
+                            source = o;
+                            ximg = XShmCreateImage(dpy, DefaultVisual(dpy, DefaultScreen(dpy)),
+                                                   24, ZPixmap, nullptr, &shm, source.w, source.h);
+                            shm.shmid = shmget(IPC_PRIVATE,
+                                               size_t(ximg->bytes_per_line) * ximg->height,
+                                               IPC_CREAT | 0600);
+                            shm.shmaddr = ximg->data = (char*)shmat(shm.shmid, nullptr, 0);
+                            shm.readOnly = False;
+                            XShmAttach(dpy, &shm);
+                            shmctl(shm.shmid, IPC_RMID, nullptr);
+                            vkr_destroy_texture(vk);
+                            vkr_init_texture(vk, source.w, source.h,
+                                             uint32_t(ximg->bytes_per_line));
+                            cap_aspect = float(source.w) / float(source.h);
+                        } else {
+                            source = o;  // moved only: new grab origin
+                        }
+                        break;
+                    }
+                }
+                continue;
+            }
             if (ev.type != KeyPress) continue;
             KeySym ks = XLookupKeysym(&ev.xkey, 0);
             bool shift = ev.xkey.state & ShiftMask;
@@ -498,79 +527,61 @@ int main(int argc, char** argv) {
         double tnow = now_s();
         if (tnow - last_cap_t > 1.0 / 30.0) {
             last_cap_t = tnow;
-            glBindTexture(GL_TEXTURE_2D, tex);
             if (test_pattern) {
                 int shift_px = int(tnow * 40) % 64;
                 for (int y = 0; y < tex_h; y++)
                     for (int x = 0; x < tex_w; x++)
                         pattern[size_t(y) * tex_w + x] =
                             (((x + shift_px) / 64 + y / 64) & 1) ? 0xff2d3646 : 0xff59c2ff;
-                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, tex_w, tex_h, GL_BGRA, GL_UNSIGNED_BYTE, pattern.data());
+                vkr_upload(vk, pattern.data(), pattern.size() * 4);
             } else if (XShmGetImage(dpy, root, ximg, source.x, source.y, AllPlanes)) {
-                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, tex_w, tex_h, GL_BGRA, GL_UNSIGNED_BYTE, ximg->data);
+                vkr_upload(vk, ximg->data, size_t(ximg->bytes_per_line) * ximg->height);
             }
         }
 
         // ---- render
-        glViewport(0, 0, glasses.w, glasses.h);
-        // True black: on the OLED panel black pixels are OFF, i.e. fully
-        // transparent in the glasses — anything brighter shows as a haze.
-        glClearColor(0.f, 0.f, 0.f, 1);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        glEnable(GL_DEPTH_TEST);
-
-        glMatrixMode(GL_PROJECTION);
-        glLoadIdentity();
-        glFrustum(-r, r, -t, t, near_z, far_z);
-
+        QuadDraw draws[5];
+        int ndraw = 0;
         if (have_pose && anchored) {
             // view = trim ⊗ inverse(recentered head pose)
             Quat head_rc = qmul(qconj(ori_offset), head_q);
             Vec3 hp = qrot(qconj(ori_offset), head_p);
             Quat view_q = qconj(qmul(head_rc, trim));
             Vec3 hp_neg = qrot(view_q, { -hp.x, -hp.y, -hp.z });
-            float view[16];
+            float view[16], model[16], vm[16], proj[16], mvp[16];
             mat_from_pose(view_q, hp_neg, view);
-
-            float model[16];
             mat_from_pose(anchor_q, anchor_p, model);
-
-            glMatrixMode(GL_MODELVIEW);
-            glLoadMatrixf(view);
-            glMultMatrixf(model);
+            mat_mul(view, model, vm);
+            mat_projection_vk(r, t, near_z, far_z, proj);
+            mat_mul(proj, vm, mvp);
 
             // quad dimensions from diagonal size + capture aspect
             float diag_m = diag_in * 0.0254f;
             float w2 = diag_m * cap_aspect / std::sqrt(1 + cap_aspect * cap_aspect) * 0.5f;
             float h2 = diag_m / std::sqrt(1 + cap_aspect * cap_aspect) * 0.5f;
 
-            glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, tex);
-            glColor3f(1, 1, 1);
-            glBegin(GL_QUADS);
-            glTexCoord2f(0, 1); glVertex3f(-w2, -h2, 0);
-            glTexCoord2f(1, 1); glVertex3f(w2, -h2, 0);
-            glTexCoord2f(1, 0); glVertex3f(w2, h2, 0);
-            glTexCoord2f(0, 0); glVertex3f(-w2, h2, 0);
-            glEnd();
-            glDisable(GL_TEXTURE_2D);
-
+            auto quad = [&](float cx, float cy, float hw, float hh,
+                            const float* col, bool textured) {
+                QuadDraw& d = draws[ndraw++];
+                memcpy(d.mvp, mvp, sizeof(mvp));
+                memcpy(d.color, col, 4 * sizeof(float));
+                d.rect[0] = cx; d.rect[1] = cy; d.rect[2] = hw; d.rect[3] = hh;
+                d.textured = textured;
+            };
             // thin frame for depth perception; orange warns that positional
             // tracking is frozen (orientation-only mode)
-            if (sixdof_live) glColor3f(0.35f, 0.76f, 1.f);
-            else glColor3f(1.f, 0.55f, 0.2f);
-            glLineWidth(2);
-            glBegin(GL_LINE_LOOP);
-            glVertex3f(-w2, -h2, 0); glVertex3f(w2, -h2, 0);
-            glVertex3f(w2, h2, 0); glVertex3f(-w2, h2, 0);
-            glEnd();
+            const float white[4] = { 1, 1, 1, 1 };
+            const float live[4] = { 0.35f, 0.76f, 1.f, 1.f };
+            const float frozen[4] = { 1.f, 0.55f, 0.2f, 1.f };
+            const float* bc = sixdof_live ? live : frozen;
+            float bt = 0.004f * diag_m;  // border half-thickness
+            quad(0, 0, w2, h2, white, true);
+            quad(0, h2, w2 + bt, bt, bc, false);
+            quad(0, -h2, w2 + bt, bt, bc, false);
+            quad(-w2, 0, bt, h2 + bt, bc, false);
+            quad(w2, 0, bt, h2 + bt, bc, false);
         }
-
-        if (use_sgi) {
-            glFlush();
-            if (sgi_wait(2, int((vsync_count + 1) & 1), &vsync_count) != 0) use_sgi = false;
-        }
-        glXSwapBuffers(dpy, win);
+        vkr_draw(vk, draws, ndraw);
         frames++;
         if (tnow - last_fps_t >= 2.0) {
             printf("fps %.0f  pose %s  6dof %s  head [%+.3f %+.3f %+.3f]m  dist %.2fm  size %.0f\"\n",
@@ -587,9 +598,11 @@ int main(int argc, char** argv) {
     xr_device_provider_shutdown(g_provider);
     xr_device_provider_destroy(g_provider);
     if (ximg) { XShmDetach(dpy, &shm); XDestroyImage(ximg); shmdt(shm.shmaddr); }
-    glXMakeCurrent(dpy, None, nullptr);
-    glXDestroyContext(dpy, ctx);
-    XDestroyWindow(dpy, win);
+    vkr_destroy_device(vk);                        // swapchain/surface/device first
+    if (sout.direct) direct_release(vk.instance);  // drop the lease (instance teardown never does)
+    vkr_destroy(vk);
+    if (sout.direct) direct_restore(dpy);          // now the server can re-enable the output
+    else if (sout.window) XDestroyWindow(dpy, sout.window);
     XCloseDisplay(dpy);
     return 0;
 }
