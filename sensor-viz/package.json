@@ -1,0 +1,24 @@
+{
+  "name": "viture-sensor-viz",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Live sensor dashboard for VITURE Luma Ultra XR glasses (WebHID + native 6DoF bridge)",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "three": "^0.178.0"
+  },
+  "devDependencies": {
+    "vite": "^7.0.0",
+    "vitest": "^4.1.9",
+    "eslint": "^10.6.0",
+    "@eslint/js": "^10.0.1",
+    "globals": "^17.7.0"
+  }
+}

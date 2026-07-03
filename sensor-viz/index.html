@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VITURE Luma Ultra — Sensor Visualizer</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <script>
+    // Surface fatal errors on-page: an uncaught module error otherwise leaves
+    // a dead-looking page with no clue why.
+    (function () {
+      function showFatal(msg) {
+        var el = document.getElementById('fatal-banner');
+        if (!el) {
+          el = document.createElement('div');
+          el.id = 'fatal-banner';
+          el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;' +
+            'background:#3a1215;color:#ff8a8f;font:12px ui-monospace,monospace;' +
+            'padding:8px 14px;border-bottom:1px solid #f07178;white-space:pre-wrap';
+          document.body.appendChild(el);
+        }
+        el.textContent = 'JS error: ' + msg;
+      }
+      window.addEventListener('error', function (e) {
+        // Benign browser notice, not a failure — never worth a banner.
+        if (String(e.message).indexOf('ResizeObserver loop') !== -1) return;
+        showFatal(e.message + '  @ ' + String(e.filename || '').split('/').pop() + ':' + e.lineno);
+      });
+      window.addEventListener('unhandledrejection', function (e) {
+        showFatal(String(e.reason && e.reason.message || e.reason));
+      });
+    })();
+  </script>
+  <header id="topbar">
+    <div class="brand">
+      <span class="logo">◒</span>
+      <h1>VITURE <span>Sensor Visualizer</span></h1>
+    </div>
+    <div class="controls">
+      <button id="btn-hid" class="btn primary" title="Connect directly over WebHID (3DoF orientation)">Connect WebHID</button>
+      <button id="btn-bridge" class="btn primary" title="Connect to native bridge (full 6DoF + raw IMU)">Connect Bridge</button>
+      <button id="btn-recenter" class="btn" disabled title="Zero the current heading/position">Recenter</button>
+      <button id="btn-level" class="btn" disabled title="Look straight ahead and click: calibrates out the constant pitch offset (sensor mounting angle). Persisted.">Level</button>
+      <button id="btn-pause" class="btn" disabled title="Freeze charts">Pause</button>
+      <button id="btn-disconnect" class="btn danger" disabled>Disconnect</button>
+    </div>
+    <div class="status">
+      <span id="dof-badge" class="badge" hidden>3DoF</span>
+      <span id="status-pill" class="pill off">disconnected</span>
+    </div>
+  </header>
+
+  <main id="grid">
+    <section id="view3d-card" class="card">
+      <div class="card-head">
+        <h2>Spatial view</h2>
+        <div id="pose-readout" class="readout mono">—</div>
+      </div>
+      <div id="view3d"></div>
+      <div id="stats-strip">
+        <div class="chip"><label>orientation</label><b id="stat-ori-hz">0</b><small>Hz</small></div>
+        <div class="chip"><label>imu raw</label><b id="stat-imu-hz">0</b><small>Hz</small></div>
+        <div class="chip"><label>pose 6DoF</label><b id="stat-pose-hz">0</b><small>Hz</small></div>
+        <div class="chip"><label>jitter</label><b id="stat-jitter">0</b><small>ms</small></div>
+        <div class="chip"><label>packets</label><b id="stat-packets">0</b><small></small></div>
+      </div>
+    </section>
+
+    <section class="card chart-card">
+      <div class="card-head"><h2>Orientation <small>euler °</small></h2><div id="val-euler" class="readout mono">—</div></div>
+      <canvas id="chart-euler"></canvas>
+    </section>
+    <section class="card chart-card">
+      <div class="card-head"><h2>Position <small>m</small></h2><div id="val-pos" class="readout mono">—</div></div>
+      <canvas id="chart-pos"></canvas>
+    </section>
+    <section class="card chart-card">
+      <div class="card-head"><h2>Gyroscope <small>rad/s</small></h2><div id="val-gyro" class="readout mono">—</div></div>
+      <canvas id="chart-gyro"></canvas>
+    </section>
+    <section class="card chart-card">
+      <div class="card-head"><h2>Accelerometer <small>m/s²</small></h2><div id="val-accel" class="readout mono">—</div></div>
+      <canvas id="chart-accel"></canvas>
+    </section>
+    <section id="device-card" class="card">
+      <div class="card-head"><h2>Device</h2></div>
+      <dl id="device-info" class="kv mono">
+        <dt>Model</dt><dd id="dev-model">—</dd>
+        <dt>Product</dt><dd id="dev-product">—</dd>
+        <dt>VID:PID</dt><dd id="dev-ids">—</dd>
+        <dt>Firmware</dt><dd id="dev-fw">—</dd>
+        <dt>Source</dt><dd id="dev-source">—</dd>
+        <dt>Brightness</dt><dd id="dev-brightness">—</dd>
+        <dt>Volume</dt><dd id="dev-volume">—</dd>
+        <dt>Display mode</dt><dd id="dev-dispmode">—</dd>
+        <dt>Film</dt><dd id="dev-film">—</dd>
+      </dl>
+      <div class="sensor-matrix" id="sensor-matrix">
+        <span data-k="orientation" class="cap">orientation</span>
+        <span data-k="position" class="cap">6DoF position</span>
+        <span data-k="gyro" class="cap">gyro</span>
+        <span data-k="accel" class="cap">accel</span>
+        <span data-k="vsync" class="cap">vsync</span>
+        <span data-k="events" class="cap">events</span>
+      </div>
+    </section>
+
+    <section id="log-card" class="card">
+      <div class="card-head"><h2>Event log</h2><button id="btn-clearlog" class="btn tiny">clear</button></div>
+      <div id="event-log" class="mono"></div>
+    </section>
+  </main>
+
+  <div id="hid-warning" hidden>
+    WebHID is not available in this browser. Use Chrome/Edge/Opera, or connect via the native bridge instead.
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
