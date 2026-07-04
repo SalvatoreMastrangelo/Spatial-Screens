@@ -41,9 +41,18 @@ def pinch_pos(landmarks):
     return ((t[0] + i[0]) / 2.0, (t[1] + i[1]) / 2.0)
 
 
+# A finger counts as curled only when its tip is CLEARLY inside its PIP joint
+# — closer to the wrist by at least this margin. Without the margin, a hand
+# being lowered or leaving the frame (fingers only loosely/ambiguously curled)
+# read as a full "fist" and fired a spurious recenter. Tunable: lower = stricter
+# (a tighter clench required); the test fist sits around 0.48, so 0.7 leaves
+# headroom for a real, not-perfectly-tight fist while rejecting a limp hand.
+_CURL_MARGIN = 0.7
+
+
 def _finger_curled(landmarks, pip_idx, tip_idx):
     wrist = landmarks[WRIST]
-    return _dist(landmarks[tip_idx], wrist) < _dist(landmarks[pip_idx], wrist)
+    return _dist(landmarks[tip_idx], wrist) < _dist(landmarks[pip_idx], wrist) * _CURL_MARGIN
 
 
 def classify_pose(landmarks):
