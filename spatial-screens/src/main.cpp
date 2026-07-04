@@ -428,6 +428,11 @@ int main(int argc, char** argv) {
                             source = o;
                             ximg = XShmCreateImage(dpy, DefaultVisual(dpy, DefaultScreen(dpy)),
                                                    24, ZPixmap, nullptr, &shm, source.w, source.h);
+                            if (!ximg) {
+                                fprintf(stderr, "capture rebuild failed (XShmCreateImage)\n");
+                                g_running = false;
+                                break;
+                            }
                             shm.shmid = shmget(IPC_PRIVATE,
                                                size_t(ximg->bytes_per_line) * ximg->height,
                                                IPC_CREAT | 0600);
@@ -436,8 +441,12 @@ int main(int argc, char** argv) {
                             XShmAttach(dpy, &shm);
                             shmctl(shm.shmid, IPC_RMID, nullptr);
                             vkr_destroy_texture(vk);
-                            vkr_init_texture(vk, source.w, source.h,
-                                             uint32_t(ximg->bytes_per_line));
+                            if (!vkr_init_texture(vk, source.w, source.h,
+                                                  uint32_t(ximg->bytes_per_line))) {
+                                fprintf(stderr, "capture rebuild failed (texture)\n");
+                                g_running = false;
+                                break;
+                            }
                             cap_aspect = float(source.w) / float(source.h);
                         } else {
                             source = o;  // moved only: new grab origin
@@ -462,6 +471,7 @@ int main(int argc, char** argv) {
             else if (ks == XK_minus) diag_in = std::max(40.f, diag_in - 10.f);
             else if (ks == XK_equal) diag_in = std::min(400.f, diag_in + 10.f);
         }
+        if (!g_running) break;
 
         // ---- pose (predicted, then smoothed)
         float pose[7] = {0};
