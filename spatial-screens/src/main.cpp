@@ -183,6 +183,15 @@ static bool sdk_init() {
 
 static void on_signal(int) { g_running = false; }
 
+// X errors must never kill us: between display acquisition and teardown a
+// fatal default handler would strand the leased output (seen live: BadAccess
+// from XGrabKey when another client held the combo). Log and carry on.
+static int on_x_error(Display*, XErrorEvent* e) {
+    fprintf(stderr, "x11: non-fatal error (request %d, error %d)\n",
+            e->request_code, e->error_code);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     std::string monitor_name, capture_name;
     // Defaults sized to FIT the Ultra's 52-degree FOV with margin: at 2 m the
@@ -222,6 +231,7 @@ int main(int argc, char** argv) {
 
     Display* dpy = XOpenDisplay(nullptr);
     if (!dpy) { fprintf(stderr, "cannot open X display\n"); return 1; }
+    XSetErrorHandler(on_x_error);
     Window root = DefaultRootWindow(dpy);
 
     // -- pick outputs: glasses = 1920x1200-ish (or --monitor), capture = another
