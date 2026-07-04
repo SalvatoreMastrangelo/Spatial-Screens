@@ -57,4 +57,4 @@ def encode_event(t, present, handedness, landmarks, pinch_norm, pinch_pos, pose)
         "pinch_pos": list(pinch_pos),
         "pose": pose,
     }
-    return (json.dumps(obj) + "\n").encode("utf-8")
+    return (json.dumps(obj, separators=(",", ":")) + "\n").encode("utf-8")

@@ -41,3 +41,23 @@ def test_encode_event_produces_newline_delimited_json():
         "landmarks": [[0.1, 0.2]] * 21,
         "pinch_norm": 0.3, "pinch_pos": [0.15, 0.2], "pose": "fist",
     }
+
+
+def test_encode_event_uses_compact_separators_the_cpp_parser_requires():
+    """gesture_client.cpp's hand-rolled scanners (json_find_bool,
+    json_find_string, json_find_pair) look for these exact substrings with
+    no space after ':' or ','. json.dumps()'s default separators put a
+    space after both, which silently breaks every field but pinch_norm
+    (strtof tolerates leading whitespace). This test pins the byte layout
+    so a regression to the default separators fails loudly here instead of
+    only at runtime against real hardware."""
+    msg = encode_event(
+        t=1.0, present=True, handedness="left",
+        landmarks=[(0.1, 0.2)] * 21,
+        pinch_norm=0.3, pinch_pos=(0.15, 0.2), pose="fist",
+    )
+
+    assert b'"present":true' in msg
+    assert b'"pose":"fist"' in msg
+    assert b'"pinch_pos":[0.15,0.2]' in msg
+    assert msg.endswith(b"\n")
