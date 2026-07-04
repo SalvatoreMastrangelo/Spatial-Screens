@@ -24,9 +24,13 @@ lose hotkeys.
 
 Options: `--monitor NAME` (glasses output; auto-detects the 1920×1200 display),
 `--capture NAME|test` (source monitor; defaults to the first non-glasses
-output), `--distance M` (default 1.75), `--size INCHES` (diagonal, default
-120), `--predict-ms MS` (pose prediction, default 8), `--window` (force the
-windowed fallback instead of direct display mode).
+output), `--distance M` (default 0.75), `--size INCHES` (diagonal, default
+24), `--pitch-trim DEG` (camera-rig angle calibration from sensor-viz,
+default 0), `--predict-ms MS` (pose prediction, default 0 — extrapolation
+noise reads as shake), `--smooth-pos 0..1` / `--smooth-ori 0..1` (pose-filter
+strength: per-frame EMA blend for position/orientation, defaults 0.10 /
+0.40, 1 = off), `--window` (force the windowed fallback instead of direct
+display mode).
 
 Keys: `R` recenter and re-place the screen in front of you (`Shift+R` also
 resets the VIO origin), `[` / `]` distance, `-` / `=` size, `Q`/`Esc` quit.
