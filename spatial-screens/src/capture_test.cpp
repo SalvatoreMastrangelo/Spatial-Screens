@@ -2,7 +2,7 @@
 // glasses, no run.sh. Writes grabbed frames as PPMs to /tmp and prints
 // per-frame timing. (Counterpart of vk_test.cpp for the capture stack.)
 //
-//   ./capture-test [--backend xshm|test] [--capture NAME] [--frames N] [--portal-probe]
+//   ./capture-test [--backend xshm|portal|test] [--capture NAME] [--frames N] [--portal-probe]
 #include "capture.h"
 #include "capture_portal.h"
 
@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         else {
-            printf("usage: %s [--backend xshm|test] [--capture NAME] [--frames N] [--portal-probe]\n", argv[0]);
+            printf("usage: %s [--backend xshm|portal|test] [--capture NAME] [--frames N] [--portal-probe]\n", argv[0]);
             return 0;
         }
     }
@@ -65,6 +65,10 @@ int main(int argc, char** argv) {
     Display* dpy = nullptr;
     if (backend == "test") {
         cap = capture_create_test();
+    } else if (backend == "portal") {
+        cap = capture_create_portal("", [](const std::string& tok) {
+            printf("portal: new restore token: %s\n", tok.c_str());
+        });
     } else if (backend == "xshm") {
         dpy = XOpenDisplay(nullptr);
         if (!dpy) { fprintf(stderr, "cannot open X display\n"); return 1; }

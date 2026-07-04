@@ -5,7 +5,7 @@ CXX ?= g++
 CXXFLAGS := -O2 -std=c++17 -Wall -Wextra -I$(SDK_DIR)/include
 VK_LIBS := -lvulkan -lX11 -lXext -lXrandr
 
-CAP_PC := dbus-1
+CAP_PC := dbus-1 libpipewire-0.3
 CAP_CFLAGS := $(shell pkg-config --cflags $(CAP_PC))
 CAP_LIBS := $(shell pkg-config --libs $(CAP_PC))
 CXXFLAGS += $(CAP_CFLAGS)

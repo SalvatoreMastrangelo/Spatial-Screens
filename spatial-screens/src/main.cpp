@@ -49,6 +49,7 @@
 #include "vk_surface.h"
 #include "gesture_client.h"
 #include "capture.h"
+#include "capture_portal.h"
 #include "config.h"
 
 // ---------------------------------------------------------------- math ----
@@ -367,9 +368,9 @@ int main(int argc, char** argv) {
         }
     }
 
-    // -- capture backend chain: auto = xshm -> test; explicit backend -> test
+    // -- capture backend chain: auto = portal -> xshm -> test; explicit backend -> test
     std::vector<std::string> chain;
-    if (capture_backend == "auto") chain = { "xshm", "test" };
+    if (capture_backend == "auto") chain = { "portal", "xshm", "test" };
     else if (capture_backend != "test") chain = { capture_backend, "test" };
     else chain = { "test" };
     size_t chain_pos = 0;
@@ -379,7 +380,16 @@ int main(int argc, char** argv) {
         while (chain_pos < chain.size()) {
             const std::string& kind = chain[chain_pos++];
             std::unique_ptr<CaptureBackend> b;
-            if (kind == "xshm") {
+            if (kind == "portal") {
+                if (!capture_name.empty())
+                    printf("capture: --capture is ignored under portal "
+                           "(the picker/restore token owns source selection)\n");
+                b = capture_create_portal(app_state.restore_token,
+                                          [&](const std::string& tok) {
+                                              app_state.restore_token = tok;
+                                              save_state(app_state);
+                                          });
+            } else if (kind == "xshm") {
                 auto outs = list_outputs(dpy);
                 OutputRect src{};
                 bool found = false;

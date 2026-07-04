@@ -2,10 +2,17 @@
 #include "capture.h"
 
 #include <dbus/dbus.h>
+#include <pipewire/pipewire.h>
+#include <spa/param/video/format-utils.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <fcntl.h>
+#include <mutex>
+#include <unistd.h>
+#include <vector>
 
 // ---------------------------------------------------- D-Bus plumbing ----
 
@@ -301,4 +308,203 @@ void portal_close_session(PortalSession& s) {
     dbus_connection_unref(conn);
     s.conn = nullptr;
     s.session_handle.clear();
+}
+
+// ------------------------------------------------- PipeWire backend ----
+
+namespace {
+
+class PortalBackend : public CaptureBackend {
+public:
+    PortalBackend(std::string old_token, std::function<void(const std::string&)> on_new_token)
+        : old_token_(std::move(old_token)), on_new_token_(std::move(on_new_token)) {}
+    ~PortalBackend() override { stop(); }
+
+    bool start() override {
+        if (!portal_open_screencast(old_token_, session_)) return false;
+        if (!session_.restore_token.empty() && on_new_token_)
+            on_new_token_(session_.restore_token);
+
+        pw_init(nullptr, nullptr);
+        loop_ = pw_thread_loop_new("ss-capture", nullptr);
+        ctx_ = pw_context_new(pw_thread_loop_get_loop(loop_), nullptr, 0);
+        if (!loop_ || !ctx_ || pw_thread_loop_start(loop_) != 0) {
+            fprintf(stderr, "capture(portal): pipewire loop setup failed\n");
+            return false;
+        }
+        pw_thread_loop_lock(loop_);
+        core_ = pw_context_connect_fd(ctx_, fcntl(session_.pw_fd, F_DUPFD_CLOEXEC, 5),
+                                      nullptr, 0);
+        if (!core_) {
+            pw_thread_loop_unlock(loop_);
+            fprintf(stderr, "capture(portal): connect_fd failed\n");
+            return false;
+        }
+        stream_ = pw_stream_new(core_, "spatial-screens",
+                                pw_properties_new(PW_KEY_MEDIA_TYPE, "Video",
+                                                  PW_KEY_MEDIA_CATEGORY, "Capture",
+                                                  PW_KEY_MEDIA_ROLE, "Screen", nullptr));
+        static const pw_stream_events EVENTS = {
+            PW_VERSION_STREAM_EVENTS,
+            /*.destroy =*/ nullptr,
+            /*.state_changed =*/ &PortalBackend::on_state_changed,
+            /*.control_info =*/ nullptr,
+            /*.io_changed =*/ nullptr,
+            /*.param_changed =*/ &PortalBackend::on_param_changed,
+            /*.add_buffer =*/ nullptr,
+            /*.remove_buffer =*/ nullptr,
+            /*.process =*/ &PortalBackend::on_process,
+            /*.drained =*/ nullptr,
+            /*.command =*/ nullptr,
+            /*.trigger_done =*/ nullptr,
+        };
+        pw_stream_add_listener(stream_, &listener_, &EVENTS, this);
+
+        // Locals, not &SPA_RECTANGLE(...) temporaries — C++ has no compound literals.
+        spa_rectangle sz_def = SPA_RECTANGLE(1920, 1080), sz_min = SPA_RECTANGLE(1, 1),
+                      sz_max = SPA_RECTANGLE(8192, 8192);
+        spa_fraction fr_def = SPA_FRACTION(30, 1), fr_min = SPA_FRACTION(0, 1),
+                     fr_max = SPA_FRACTION(240, 1);
+        uint8_t podbuf[1024];
+        spa_pod_builder b = SPA_POD_BUILDER_INIT(podbuf, sizeof(podbuf));
+        const spa_pod* params[1] = { (const spa_pod*)spa_pod_builder_add_object(&b,
+            SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
+            SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video),
+            SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
+            SPA_FORMAT_VIDEO_format, SPA_POD_CHOICE_ENUM_Id(3,
+                SPA_VIDEO_FORMAT_BGRx, SPA_VIDEO_FORMAT_BGRx, SPA_VIDEO_FORMAT_BGRA),
+            SPA_FORMAT_VIDEO_size, SPA_POD_CHOICE_RANGE_Rectangle(&sz_def, &sz_min, &sz_max),
+            SPA_FORMAT_VIDEO_framerate, SPA_POD_CHOICE_RANGE_Fraction(&fr_def, &fr_min, &fr_max)) };
+        alive_ = true;  // BEFORE the wait loop: errors during negotiation clear it
+        if (pw_stream_connect(stream_, PW_DIRECTION_INPUT, session_.node_id,
+                              (pw_stream_flags)(PW_STREAM_FLAG_AUTOCONNECT |
+                                                PW_STREAM_FLAG_MAP_BUFFERS),
+                              params, 1) != 0) {
+            pw_thread_loop_unlock(loop_);
+            fprintf(stderr, "capture(portal): stream connect failed\n");
+            return false;
+        }
+        // Wait for format negotiation so callers can size the texture.
+        struct timespec abst;
+        pw_thread_loop_get_time(loop_, &abst, 5 * SPA_NSEC_PER_SEC);
+        while (!have_format_ && alive_)
+            if (pw_thread_loop_timed_wait_full(loop_, &abst) != 0) break;
+        pw_thread_loop_unlock(loop_);
+        if (!have_format_) {
+            fprintf(stderr, "capture(portal): no video format within 5 s\n");
+            return false;
+        }
+        return true;
+    }
+
+    // Swap-out under the lock: read_buf_ is owned by the consumer side, so
+    // the PipeWire thread can never touch (or reallocate) the bytes behind
+    // the pointer we hand out. Returns false when no NEW frame arrived
+    // since the last call — the caller just keeps its current texture.
+    bool latest_frame(CaptureFrame& out) override {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (front_ < 0) return false;
+        read_buf_.swap(buf_[front_]);
+        front_ = -1;
+        out.data = read_buf_.data();
+        out.w = w_; out.h = h_; out.pitch = pitch_;
+        return true;
+    }
+
+    bool alive() const override { return alive_; }
+    const char* name() const override { return "portal"; }
+
+    void stop() override {
+        if (loop_) {
+            pw_thread_loop_lock(loop_);
+            if (stream_) { pw_stream_destroy(stream_); stream_ = nullptr; }
+            if (core_) { pw_core_disconnect(core_); core_ = nullptr; }
+            pw_thread_loop_unlock(loop_);
+            pw_thread_loop_stop(loop_);
+            if (ctx_) { pw_context_destroy(ctx_); ctx_ = nullptr; }
+            pw_thread_loop_destroy(loop_);
+            loop_ = nullptr;
+        }
+        if (session_.pw_fd >= 0) { close(session_.pw_fd); session_.pw_fd = -1; }
+        portal_close_session(session_);
+        alive_ = false;
+    }
+
+private:
+    static void on_param_changed(void* ud, uint32_t id, const spa_pod* param) {
+        auto* self = static_cast<PortalBackend*>(ud);
+        if (id != SPA_PARAM_Format || !param) return;
+        uint32_t mt, mst;
+        if (spa_format_parse(param, &mt, &mst) < 0 ||
+            mt != SPA_MEDIA_TYPE_video || mst != SPA_MEDIA_SUBTYPE_raw) return;
+        spa_video_info_raw info{};
+        if (spa_format_video_raw_parse(param, &info) < 0) return;
+        {
+            std::lock_guard<std::mutex> lk(self->mtx_);
+            self->w_ = int(info.size.width);
+            self->h_ = int(info.size.height);
+            self->pitch_ = info.size.width * 4;  // real stride comes per-buffer
+        }
+        self->have_format_ = true;
+        pw_thread_loop_signal(self->loop_, false);
+    }
+
+    static void on_state_changed(void* ud, pw_stream_state /*old*/, pw_stream_state st,
+                                 const char* error) {
+        auto* self = static_cast<PortalBackend*>(ud);
+        if (st == PW_STREAM_STATE_ERROR ||
+            (st == PW_STREAM_STATE_UNCONNECTED && self->saw_streaming_)) {
+            fprintf(stderr, "capture(portal): stream %s%s%s\n",
+                    st == PW_STREAM_STATE_ERROR ? "error" : "disconnected",
+                    error ? ": " : "", error ? error : "");
+            self->alive_ = false;
+            pw_thread_loop_signal(self->loop_, false);
+        }
+        if (st == PW_STREAM_STATE_STREAMING) self->saw_streaming_ = true;
+    }
+
+    static void on_process(void* ud) {
+        auto* self = static_cast<PortalBackend*>(ud);
+        pw_buffer* pb = pw_stream_dequeue_buffer(self->stream_);
+        if (!pb) return;
+        spa_buffer* sb = pb->buffer;
+        if (sb->datas[0].data && self->have_format_) {
+            uint32_t stride = sb->datas[0].chunk->stride;
+            if (!stride) stride = uint32_t(self->w_) * 4;
+            std::lock_guard<std::mutex> lk(self->mtx_);
+            int back = self->front_ == 0 ? 1 : 0;
+            self->buf_[back].assign(
+                static_cast<const uint8_t*>(sb->datas[0].data),
+                static_cast<const uint8_t*>(sb->datas[0].data) + size_t(stride) * self->h_);
+            self->pitch_ = stride;
+            self->front_ = back;
+        }
+        pw_stream_queue_buffer(self->stream_, pb);
+    }
+
+    std::string old_token_;
+    std::function<void(const std::string&)> on_new_token_;
+    PortalSession session_{};
+    pw_thread_loop* loop_ = nullptr;
+    pw_context* ctx_ = nullptr;
+    pw_core* core_ = nullptr;
+    pw_stream* stream_ = nullptr;
+    spa_hook listener_{};
+    std::atomic<bool> have_format_{false};
+    std::atomic<bool> alive_{false};
+    bool saw_streaming_ = false;
+    std::mutex mtx_;
+    std::vector<uint8_t> buf_[2];   // written by the PipeWire thread
+    std::vector<uint8_t> read_buf_; // owned by the consumer after swap-out
+    int front_ = -1;                // -1 = no unconsumed frame
+    int w_ = 0, h_ = 0;
+    uint32_t pitch_ = 0;
+};
+
+}  // namespace
+
+std::unique_ptr<CaptureBackend> capture_create_portal(
+    const std::string& old_token,
+    std::function<void(const std::string&)> on_new_token) {
+    return std::make_unique<PortalBackend>(std::move(old_token), std::move(on_new_token));
 }
