@@ -1,4 +1,5 @@
 #include "gesture_client.h"
+#include "gesture_parse.h"
 
 #include <cerrno>
 #include <chrono>
@@ -18,69 +19,10 @@ extern char** environ;
 namespace {
 
 constexpr double GESTURE_INFER_HZ = 15.0;
-constexpr float PINCH_THRESHOLD = 0.5f; // tune after Task 9's hands-on test
 
 double now_s() {
     using namespace std::chrono;
     return duration<double>(steady_clock::now().time_since_epoch()).count();
-}
-
-// Minimal key-based scanners for the fixed, known event schema (see
-// protocol.py's encode_event). Not a general JSON parser — deliberately
-// so, to avoid adding a JSON library dependency for a 5-field schema we
-// control on both ends.
-bool json_find_bool(const std::string& s, const char* key, bool& out) {
-    std::string pat = std::string("\"") + key + "\":";
-    auto pos = s.find(pat);
-    if (pos == std::string::npos) return false;
-    pos += pat.size();
-    out = s.compare(pos, 4, "true") == 0;
-    return true;
-}
-
-bool json_find_number(const std::string& s, const char* key, float& out) {
-    std::string pat = std::string("\"") + key + "\":";
-    auto pos = s.find(pat);
-    if (pos == std::string::npos) return false;
-    pos += pat.size();
-    out = strtof(s.c_str() + pos, nullptr);
-    return true;
-}
-
-bool json_find_string(const std::string& s, const char* key, std::string& out) {
-    std::string pat = std::string("\"") + key + "\":\"";
-    auto pos = s.find(pat);
-    if (pos == std::string::npos) return false;
-    pos += pat.size();
-    auto end = s.find('"', pos);
-    if (end == std::string::npos) return false;
-    out = s.substr(pos, end - pos);
-    return true;
-}
-
-// pinch_pos is emitted as "pinch_pos":[x,y] — json_find_number would stop
-// at the array's leading '[', so it needs its own extractor.
-bool json_find_pair(const std::string& s, const char* key, float& x, float& y) {
-    std::string pat = std::string("\"") + key + "\":[";
-    auto pos = s.find(pat);
-    if (pos == std::string::npos) return false;
-    pos += pat.size();
-    x = strtof(s.c_str() + pos, nullptr);
-    auto comma = s.find(',', pos);
-    if (comma == std::string::npos) return false;
-    y = strtof(s.c_str() + comma + 1, nullptr);
-    return true;
-}
-
-GestureEvent parse_event(const std::string& line) {
-    GestureEvent ev;
-    json_find_bool(line, "present", ev.present);
-    float pinch_norm = 999.f;
-    json_find_number(line, "pinch_norm", pinch_norm);
-    ev.pinching = ev.present && pinch_norm < PINCH_THRESHOLD;
-    json_find_pair(line, "pinch_pos", ev.pinch_x, ev.pinch_y);
-    json_find_string(line, "pose", ev.pose);
-    return ev;
 }
 
 } // namespace
