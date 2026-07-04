@@ -200,6 +200,8 @@ static std::atomic<bool> g_running{true};
 static bool g_probe_camera = false;
 static int g_probe_frames_remaining = 0;
 static GestureClient g_gestures;
+static std::atomic<int> g_cam_w{0};  // tracking-camera frame size, for hand-overlay aspect
+static std::atomic<int> g_cam_h{0};
 static constexpr float PINCH_DISTANCE_SENSITIVITY = 4.0f; // tune after hands-on test; higher = faster response to hand motion
 static constexpr double FIST_HOLD_SECONDS = 0.5;          // how long a fist must be held before it triggers recenter
 
@@ -222,6 +224,8 @@ static void on_camera_carina(char* image_left0, char* /*image_right0*/,
         }
         g_probe_frames_remaining--;
     }
+    g_cam_w.store(width, std::memory_order_relaxed);
+    g_cam_h.store(height, std::memory_order_relaxed);
     g_gestures.maybe_send_frame(reinterpret_cast<uint8_t*>(image_left0), width, height, timestamp);
 }
 
@@ -820,7 +824,7 @@ int main(int argc, char** argv) {
         }
 
         // ---- render
-        QuadDraw draws[5];
+        QuadDraw draws[32];
         int ndraw = 0;
         if (have_pose && anchored) {
             // view = trim ⊗ inverse(recentered head pose)
@@ -868,6 +872,65 @@ int main(int argc, char** argv) {
             d.rect[0] = 0; d.rect[1] = 0; d.rect[2] = dot_r; d.rect[3] = dot_r;
             d.textured = false;
             d.circle = true;
+
+            // Pinch-status dot, just left of the VO tracking-status dot (which
+            // is at x-factor 0.95). Only shown while the gesture pipeline is
+            // live (a grey dot with no sidecar would falsely imply "running,
+            // no hand seen").  no hand -> grey, hand seen -> blue, pinch -> green.
+            if (g_gestures.enabled()) {
+                const float grey[4]  = { 0.5f, 0.5f, 0.5f, 1.f };
+                const float hand[4]  = { 0.30f, 0.55f, 1.f, 1.f };
+                const float pinch[4] = { 0.20f, 0.90f, 0.30f, 1.f };
+                const float* pcol = !gev.present ? grey : (gev.pinching ? pinch : hand);
+                float peye[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
+                                   0.90f * tan_r * DOT_Z, -0.95f * tan_t * DOT_Z, -DOT_Z, 1 };
+                QuadDraw& pd = draws[ndraw++];
+                mat_mul(proj, peye, pd.mvp);
+                memcpy(pd.color, pcol, 4 * sizeof(float));
+                pd.rect[0] = 0; pd.rect[1] = 0; pd.rect[2] = dot_r; pd.rect[3] = dot_r;
+                pd.textured = false;
+                pd.circle = true;
+            }
+
+            // Hand-landmark overlay: 21 dots in a head-locked lower-left panel,
+            // shown only while a hand is actually seen. One shared panel mvp;
+            // each landmark is a different rect center (the quad shader builds
+            // the quad from rect.xy ± rect.zw), so no per-dot matrix. Thumb tip
+            // (4) and index tip (8) — the pair the pinch is measured between —
+            // are yellow, turning green while pinching.
+            if (g_gestures.enabled() && gev.present && gev.has_landmarks) {
+                int cw = g_cam_w.load(std::memory_order_relaxed);
+                int ch = g_cam_h.load(std::memory_order_relaxed);
+                float aspect = (cw > 0 && ch > 0) ? float(cw) / float(ch) : 4.f / 3.f;
+                const float PANEL_H = 0.09f * DOT_Z;        // half-height (~10° tall)
+                const float PANEL_W = PANEL_H * aspect;     // aspect-preserved half-width
+                float leye[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
+                                   -0.55f * tan_r * DOT_Z, -0.45f * tan_t * DOT_Z, -DOT_Z, 1 };
+                float panel_mvp[16];
+                mat_mul(proj, leye, panel_mvp);
+                const float lm_col[4]  = { 0.40f, 0.90f, 1.00f, 1.f }; // soft cyan
+                const float tip[4]     = { 1.00f, 0.85f, 0.10f, 1.f }; // yellow
+                const float tip_pin[4] = { 0.20f, 0.90f, 0.30f, 1.f }; // green
+                const float lm_r = 0.010f * DOT_Z;
+                for (int i = 0; i < 21 && ndraw < 32; i++) {
+                    float nx = gev.landmarks[i][0];
+                    float ny = gev.landmarks[i][1];
+                    // Normalized image coords -> panel-local. Image y is down,
+                    // eye-space y is up, so negate y. x is mapped directly; if
+                    // the hand reads left-right mirrored on hardware, change
+                    // (nx - 0.5f) to (0.5f - nx) here.
+                    float lx =  (nx - 0.5f) * 2.f * PANEL_W;
+                    float ly = -(ny - 0.5f) * 2.f * PANEL_H;
+                    const float* col = (i == 4 || i == 8)
+                                         ? (gev.pinching ? tip_pin : tip) : lm_col;
+                    QuadDraw& ld = draws[ndraw++];
+                    memcpy(ld.mvp, panel_mvp, sizeof(panel_mvp));
+                    memcpy(ld.color, col, 4 * sizeof(float));
+                    ld.rect[0] = lx; ld.rect[1] = ly; ld.rect[2] = lm_r; ld.rect[3] = lm_r;
+                    ld.textured = false;
+                    ld.circle = true;
+                }
+            }
         }
         static int draw_fail = 0;
         if (vkr_draw(vk, draws, ndraw)) {
