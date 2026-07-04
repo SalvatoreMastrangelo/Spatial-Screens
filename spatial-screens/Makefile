@@ -2,7 +2,7 @@ SDK_DIR := ../sdk
 SDK_LIB := $(SDK_DIR)/lib/x86_64
 
 CXX ?= g++
-CXXFLAGS := -O2 -std=c++17 -Wall -Wextra -I$(SDK_DIR)/include
+CXXFLAGS := -O2 -std=c++17 -Wall -Wextra -I$(SDK_DIR)/include -I../bridge
 VK_LIBS := -lvulkan -lX11 -lXext -lXrandr
 
 CAP_PC := dbus-1 libpipewire-0.3
@@ -16,7 +16,7 @@ LDFLAGS := -L$(SDK_LIB) -lglasses $(VK_LIBS) -lpthread $(CAP_LIBS) \
 
 SHADER_HDRS := shaders/quad.vert.spv.h shaders/quad.frag.spv.h
 OBJS := src/main.o src/vk_renderer.o src/vk_surface.o src/gesture_client.o \
-        src/capture.o src/capture_xshm.o src/config.o src/capture_portal.o
+        src/capture.o src/capture_xshm.o src/config.o src/capture_portal.o src/telemetry.o
 
 spatial-screens: $(OBJS)
 	$(CXX) $(OBJS) -o $@ $(LDFLAGS)
@@ -28,7 +28,10 @@ src/gesture_client.o: src/gesture_client.cpp src/gesture_client.h
 src/config.o: src/config.cpp src/config.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-src/main.o: src/gesture_client.h src/capture.h src/config.h
+src/telemetry.o: src/telemetry.cpp src/telemetry.h ../bridge/ws_server.hpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+src/main.o: src/gesture_client.h src/capture.h src/config.h src/telemetry.h
 
 src/%.o: src/%.cpp $(SHADER_HDRS) src/vk_renderer.h src/vk_surface.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@

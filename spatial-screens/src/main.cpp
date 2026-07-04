@@ -51,6 +51,7 @@
 #include "capture.h"
 #include "capture_portal.h"
 #include "config.h"
+#include "telemetry.h"
 
 // ---------------------------------------------------------------- math ----
 
@@ -119,6 +120,7 @@ static void mat_projection_vk(float rr, float tt, float n, float f, float* m) {
 // ------------------------------------------------------------- SDK glue ----
 
 static XRDeviceProviderHandle g_provider = nullptr;
+static int g_pid = 0;
 static std::atomic<bool> g_running{true};
 static bool g_probe_camera = false;
 static int g_probe_frames_remaining = 0;
@@ -180,6 +182,7 @@ static bool sdk_init() {
         fprintf(stderr, "No supported VITURE glasses found.\n");
         return false;
     }
+    g_pid = pid;
     xr_device_provider_set_log_level(1);
     g_provider = xr_device_provider_create(pid);
     if (!g_provider) {
@@ -216,6 +219,19 @@ static std::string executable_dir() {
     std::string path(buf);
     auto slash = path.find_last_of('/');
     return slash == std::string::npos ? "." : path.substr(0, slash);
+}
+
+// Cheap RSS sample for the leak watchdog: 2nd field of /proc/self/statm is
+// resident pages. Not for per-frame use — call it at the ~2s fps cadence.
+static int sample_rss_mb() {
+    FILE* f = fopen("/proc/self/statm", "r");
+    if (!f) return 0;
+    long pages = 0, resident = 0;
+    int got = fscanf(f, "%ld %ld", &pages, &resident);
+    fclose(f);
+    if (got != 2) return 0;
+    long page_size = sysconf(_SC_PAGESIZE);
+    return int(resident * page_size / (1024 * 1024));
 }
 
 // ---------------------------------------------------------------- main ----
@@ -286,6 +302,8 @@ int main(int argc, char** argv) {
                o.smooth_pos, o.smooth_ori, o.window ? "true" : "false", o.ws_port);
         return 0;
     }
+    Telemetry tele;
+    tele.start(uint16_t(o.ws_port));
     // Local aliases: the render loop mutates distance/size at runtime.
     std::string monitor_name = o.monitor, capture_name = o.capture;
     std::string capture_backend = o.capture_backend;
@@ -406,6 +424,9 @@ int main(int argc, char** argv) {
             if (b && b->start()) {
                 cap = std::move(b);
                 printf("capture: %s\n", cap->name());
+                char msg[128];
+                snprintf(msg, sizeof(msg), "capture backend: %s", cap->name());
+                tele.log("info", msg);
                 return;
             }
             if (b) fprintf(stderr, "capture: %s failed to start — falling back\n", kind.c_str());
@@ -442,8 +463,17 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    char market[64] = {0};
+    int mlen = sizeof(market);
+    xr_device_provider_get_market_name(g_pid, market, &mlen);
+    char fw[128] = {0};
+    int fwlen = sizeof(fw);
+    xr_device_provider_get_glasses_version(g_provider, fw, &fwlen);
+
     std::string gesture_socket = "/tmp/spatial-screens-gestures-" + std::to_string(getpid()) + ".sock";
     g_gestures.start(gesture_socket, executable_dir() + "/gestures/hand_tracker.py");
+    tele.log("info", g_gestures.enabled() ? "gesture sidecar connected"
+                                          : "gesture sidecar unavailable");
 
     // -- projection from the glasses' 52-degree diagonal FOV (16:10 panel)
     const float DIAG_FOV = 52.f;
@@ -478,6 +508,9 @@ int main(int argc, char** argv) {
     };
     double last_fps_t = now_s(), last_cap_t = 0;
     int frames = 0;
+    float last_fps = 0;
+    int rss_mb = 0;
+    bool rss_warned = false, rss_critical = false;
     bool have_pose = false;
 
     // 6DoF liveness heuristic: if the head clearly rotates but reported
@@ -516,6 +549,7 @@ int main(int argc, char** argv) {
                 ori_offset = yaw_twist(head_q);
                 place_screen();
                 printf("recentered%s\n", shift ? " + VIO reset" : "");
+                tele.log("info", "recentered");
             }
             else if (ks == XK_bracketleft)  { distance = std::max(0.5f, distance - 0.25f); place_screen(); }
             else if (ks == XK_bracketright) { distance = std::min(10.f, distance + 0.25f); place_screen(); }
@@ -523,6 +557,17 @@ int main(int argc, char** argv) {
             else if (ks == XK_equal) diag_in = std::min(400.f, diag_in + 10.f);
         }
         if (!g_running) break;
+
+        double tnow = now_s();
+
+        // ---- dashboard recenter request
+        if (tele.reset_requested()) {
+            reset_pose_carina(g_provider);
+            ori_offset = yaw_twist(head_q);
+            place_screen();
+            printf("recentered + VIO reset (dashboard)\n");
+            tele.log("info", "pose reset via dashboard");
+        }
 
         // ---- gestures
         // Fist-hold takes priority and is mutually exclusive with pinch-drag:
@@ -540,6 +585,7 @@ int main(int argc, char** argv) {
                 ori_offset = yaw_twist(head_q);
                 place_screen();
                 printf("gesture recenter (fist-hold)\n");
+                tele.log("info", "recentered");
                 fist_triggered = true;
             }
             was_pinching = false;
@@ -618,6 +664,11 @@ int main(int argc, char** argv) {
                 if (m > 1e-6f) { head_q.w /= m; head_q.x /= m; head_q.y /= m; head_q.z /= m; }
             }
         }
+        if (have_pose) {
+            float tp[3] = { head_p.x, head_p.y, head_p.z };
+            float tq[4] = { head_q.w, head_q.x, head_q.y, head_q.z };
+            tele.send_pose(tp, tq, tnow);
+        }
 
         // ---- 6DoF liveness over a ~1 s window
         if (have_pose) {
@@ -639,7 +690,6 @@ int main(int argc, char** argv) {
         }
 
         // ---- capture (30 Hz is plenty; pose stays at panel rate)
-        double tnow = now_s();
         if (tnow - last_cap_t > 1.0 / 30.0) {
             last_cap_t = tnow;
             if (cap && !cap->alive()) {
@@ -657,6 +707,7 @@ int main(int argc, char** argv) {
                         g_running = false;
                     } else {
                         cap_aspect = float(f.w) / float(f.h);
+                        tele.log("info", "capture source resized - texture rebuilt");
                     }
                 }
                 if (g_running) vkr_upload(vk, f.data, size_t(f.pitch) * f.h);
@@ -714,13 +765,38 @@ int main(int argc, char** argv) {
             g_running = false;
         }
         if (tnow - last_fps_t >= 2.0) {
+            last_fps = float(frames / (tnow - last_fps_t));
             printf("fps %.0f  pose %s  6dof %s  head [%+.3f %+.3f %+.3f]m  dist %.2fm  size %.0f\"\n",
-                   frames / (tnow - last_fps_t), have_pose ? "ok" : "waiting",
+                   last_fps, have_pose ? "ok" : "waiting",
                    sixdof_live ? "LIVE" : "frozen",
                    head_p.x, head_p.y, head_p.z, distance, diag_in);
             frames = 0;
             last_fps_t = tnow;
+
+            // ---- RSS leak watchdog: sampled on the fps cadence, each
+            // threshold latched to fire once.
+            rss_mb = sample_rss_mb();
+            if (!rss_warned && rss_mb > 2048) {
+                rss_warned = true;
+                fprintf(stderr, "spatial-screens: RSS %d MB — possible leak\n", rss_mb);
+                char msg[128];
+                snprintf(msg, sizeof(msg), "spatial-screens: RSS %d MB — possible leak", rss_mb);
+                tele.log("warn", msg);
+            }
+            if (!rss_critical && rss_mb > 8192) {
+                rss_critical = true;
+                fprintf(stderr, "spatial-screens: RSS %d MB exceeds 8 GB — shutting down to avoid OOM kill\n",
+                        rss_mb);
+                char msg[128];
+                snprintf(msg, sizeof(msg),
+                         "spatial-screens: RSS %d MB exceeds 8 GB — shutting down to avoid OOM kill", rss_mb);
+                tele.log("error", msg);
+                g_running = false;
+            }
         }
+        tele.send_hello(market, g_pid, fw, XR_DEVICE_TYPE_VITURE_CARINA);
+        tele.send_app(last_fps, sixdof_live, anchored, distance, diag_in,
+                      cap ? cap->name() : "none", sout.direct, rss_mb);
     }
 
     app_state.distance = distance;
@@ -728,6 +804,7 @@ int main(int argc, char** argv) {
     save_state(app_state);
     printf("shutting down…\n");
     g_gestures.stop();
+    tele.stop();
     xr_device_provider_stop(g_provider);
     xr_device_provider_shutdown(g_provider);
     xr_device_provider_destroy(g_provider);
