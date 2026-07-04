@@ -75,7 +75,7 @@ via `./run.sh`. Never double-start. After any hard kill in direct mode:
       `--set non-desktop 0`, then `--mode 1920x1200 --rate 120 --pos 322x0`.
       Backlog: the app could salvage a stranded non-desktop output at
       startup (pairs with the single-instance-guard follow-up).
-- [ ] 10. Memory watchdog / leak watch — run direct mode for 10+ min and
+- [x] 10. Memory watchdog / leak watch — run direct mode for 10+ min and
       watch the dashboard's Memory (rss) row and the console. RSS should
       plateau, not climb steadily. (A prior run leaked to ~15.9 GB and was
       OOM-killed.) If it climbs: note the rate, whether it correlates with
@@ -83,6 +83,16 @@ via `./run.sh`. Never double-start. After any hard kill in direct mode:
       and with `--capture-backend test` (isolates capture vs SDK vs gesture
       as the leak source). The app now self-shuts-down gracefully above 8 GB
       to avoid an OOM SIGKILL stranding the display.
+      RESULT (12.7 min soak, portal, capture-hz 120, glasses static on the
+      desk): NO plateau — slow steady climb, 474→494 MB, ~1.5 MB/min,
+      every 15 s sample higher than the last. Sidecar flat (+3.7 MB
+      warmup). ZERO `6dof frozen` episodes the whole soak (426 LIVE), so
+      this component of the leak is uncorrelated with tracking dropouts
+      and far slower than the prior 15.9 GB blowup (~80 h to the 8 GB
+      watchdog at this rate). The A/B isolation (sidecar off;
+      `--capture-backend test`; worn-and-moving vs static) is still the
+      next diagnostic — this soak only establishes the baseline rate.
+      Raw samples: rss-soak.csv (session scratchpad).
 - [x] 11. Portal cold-grant stall — first-ever launch (no stored restore
       token) shows the GNOME screen-share picker and blocks up to 120s
       waiting for your choice; once granted, the token is stored and
