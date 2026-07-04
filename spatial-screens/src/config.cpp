@@ -1,5 +1,6 @@
 #include "config.h"
 
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -7,6 +8,22 @@
 #include <unistd.h>
 
 namespace {
+
+bool mkdir_recursive(const std::string& path) {
+    // Walk the path component by component from the first '/', creating missing levels.
+    // Ignore EEXIST; on any other failure, warn and return false.
+    for (size_t i = 1; i <= path.length(); ++i) {
+        if (i < path.length() && path[i] != '/') continue;
+        std::string component = path.substr(0, i);
+        if (mkdir(component.c_str(), 0755) != 0) {
+            if (errno != EEXIST) {
+                fprintf(stderr, "state: cannot create %s: %s\n", component.c_str(), strerror(errno));
+                return false;
+            }
+        }
+    }
+    return true;
+}
 
 std::string xdg_dir(const char* env, const char* home_suffix) {
     const char* v = getenv(env);
@@ -111,10 +128,7 @@ void load_state(AppState& s) {
 bool save_state(const AppState& s) {
     std::string path = state_file_path();
     std::string dir = path.substr(0, path.find_last_of('/'));
-    // mkdir -p for the two possible missing levels (~/.local/state, then ours)
-    std::string parent = dir.substr(0, dir.find_last_of('/'));
-    mkdir(parent.c_str(), 0755);
-    mkdir(dir.c_str(), 0755);
+    if (!mkdir_recursive(dir)) return false;
     std::string tmp = path + ".tmp";
     FILE* f = fopen(tmp.c_str(), "w");
     if (!f) {
