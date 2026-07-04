@@ -4,13 +4,19 @@ SDK_LIB := $(SDK_DIR)/lib/x86_64
 CXX ?= g++
 CXXFLAGS := -O2 -std=c++17 -Wall -Wextra -I$(SDK_DIR)/include
 VK_LIBS := -lvulkan -lX11 -lXext -lXrandr
-LDFLAGS := -L$(SDK_LIB) -lglasses $(VK_LIBS) -lpthread \
+
+CAP_PC := dbus-1
+CAP_CFLAGS := $(shell pkg-config --cflags $(CAP_PC))
+CAP_LIBS := $(shell pkg-config --libs $(CAP_PC))
+CXXFLAGS += $(CAP_CFLAGS)
+
+LDFLAGS := -L$(SDK_LIB) -lglasses $(VK_LIBS) -lpthread $(CAP_LIBS) \
 	-Wl,--disable-new-dtags,-rpath,'$$ORIGIN/$(SDK_LIB)' \
 	-Wl,--allow-shlib-undefined
 
 SHADER_HDRS := shaders/quad.vert.spv.h shaders/quad.frag.spv.h
 OBJS := src/main.o src/vk_renderer.o src/vk_surface.o src/gesture_client.o \
-        src/capture.o src/capture_xshm.o src/config.o
+        src/capture.o src/capture_xshm.o src/config.o src/capture_portal.o
 
 spatial-screens: $(OBJS)
 	$(CXX) $(OBJS) -o $@ $(LDFLAGS)
@@ -36,13 +42,17 @@ shaders/%.frag.spv.h: shaders/%.frag
 vk-test: src/vk_test.o src/vk_renderer.o src/vk_surface.o
 	$(CXX) $^ -o $@ $(VK_LIBS)
 
-CAPTURE_OBJS := src/capture.o src/capture_xshm.o
+CAPTURE_OBJS := src/capture.o src/capture_xshm.o src/capture_portal.o
 
 # Capture objects don't touch Vulkan or the shaders — lighter prereqs.
 src/capture.o src/capture_xshm.o src/capture_test.o: src/capture.h src/vk_surface.h
 
+src/capture_portal.o: src/capture_portal.cpp src/capture_portal.h src/capture.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+src/capture_test.o: src/capture_portal.h
+
 capture-test: src/capture_test.o $(CAPTURE_OBJS) src/vk_surface.o
-	$(CXX) $^ -o $@ $(VK_LIBS)
+	$(CXX) $^ -o $@ $(VK_LIBS) $(CAP_LIBS) -lpthread
 
 run: spatial-screens
 	./run.sh

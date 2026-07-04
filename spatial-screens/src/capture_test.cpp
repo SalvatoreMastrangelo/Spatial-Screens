@@ -2,8 +2,9 @@
 // glasses, no run.sh. Writes grabbed frames as PPMs to /tmp and prints
 // per-frame timing. (Counterpart of vk_test.cpp for the capture stack.)
 //
-//   ./capture-test [--backend xshm|test] [--capture NAME] [--frames N]
+//   ./capture-test [--backend xshm|test] [--capture NAME] [--frames N] [--portal-probe]
 #include "capture.h"
+#include "capture_portal.h"
 
 #include <chrono>
 #include <cstdio>
@@ -37,8 +38,25 @@ int main(int argc, char** argv) {
         if (!strcmp(argv[i], "--backend") && i + 1 < argc) backend = argv[++i];
         else if (!strcmp(argv[i], "--capture") && i + 1 < argc) capture_name = argv[++i];
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--portal-probe")) {
+            PortalSession s{};
+            printf("opening portal screencast (a system picker dialog may appear)…\n");
+            if (!portal_open_screencast("", s)) return 1;
+            printf("portal ok: node=%u fd=%d token='%s' session=%s\n",
+                   s.node_id, s.pw_fd, s.restore_token.c_str(), s.session_handle.c_str());
+            if (!s.restore_token.empty()) {
+                printf("retrying with restore token (no dialog should appear)…\n");
+                PortalSession s2{};
+                if (portal_open_screencast(s.restore_token, s2)) {
+                    printf("restore ok: node=%u token='%s'\n", s2.node_id, s2.restore_token.c_str());
+                    portal_close_session(s2);
+                }
+            }
+            portal_close_session(s);
+            return 0;
+        }
         else {
-            printf("usage: %s [--backend xshm|test] [--capture NAME] [--frames N]\n", argv[0]);
+            printf("usage: %s [--backend xshm|test] [--capture NAME] [--frames N] [--portal-probe]\n", argv[0]);
             return 0;
         }
     }
