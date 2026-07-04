@@ -92,7 +92,7 @@ via `./run.sh`. Never double-start. After any hard kill in direct mode:
       watchdog at this rate). The A/B isolation (sidecar off;
       `--capture-backend test`; worn-and-moving vs static) is still the
       next diagnostic — this soak only establishes the baseline rate.
-      Raw samples: rss-soak.csv (session scratchpad).
+      Raw samples: docs/testing/2026-07-04-rss-soak.csv.
 - [x] 11. Portal cold-grant stall — first-ever launch (no stored restore
       token) shows the GNOME screen-share picker and blocks up to 120s
       waiting for your choice; once granted, the token is stored and
