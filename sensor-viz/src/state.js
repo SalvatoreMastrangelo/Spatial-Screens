@@ -108,6 +108,14 @@ export const state = {
     this.log('recentered (heading zeroed' + (this.hasPosition ? ' + position zeroed' : '') + ')');
   },
 
+  // For app-side recenters (spatial-screens reset_pose): the incoming pose
+  // re-zeros at the source, so local offsets must drop to identity or the
+  // view double-recenters.
+  clearRecenter() {
+    this._oriOffset = quatIdentity();
+    this._posOffset = { x: 0, y: 0, z: 0 };
+  },
+
   // Capture the current pitch as the sensor mounting offset: call while
   // looking straight ahead at the horizon.
   level() {

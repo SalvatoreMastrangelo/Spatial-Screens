@@ -445,6 +445,11 @@ void vkr_destroy_texture(VkRend& r) {
     r.tex = VK_NULL_HANDLE; r.tex_mem = VK_NULL_HANDLE; r.tex_view = VK_NULL_HANDLE;
 }
 
+void vkr_wait_uploads(VkRend& r) {
+    if (!r.device || !r.fence[0]) return;
+    vkWaitForFences(r.device, VkRend::FRAMES, r.fence, VK_TRUE, 2000000000ull);
+}
+
 void vkr_upload(VkRend& r, const void* pixels, size_t bytes) {
     size_t cap = (size_t)r.tex_pitch * r.tex_h;
     if (bytes > cap) bytes = cap;

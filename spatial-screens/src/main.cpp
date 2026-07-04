@@ -596,6 +596,7 @@ int main(int argc, char** argv) {
     int rss_mb = 0;
     bool rss_warned = false, rss_critical = false;
     bool have_pose = false;
+    double recenter_at = -1;  // >0: re-seed pose + re-place at this time
 
     // 6DoF liveness heuristic: if the head clearly rotates but reported
     // position stays frozen, the VIO is running orientation-only.
@@ -630,9 +631,15 @@ int main(int argc, char** argv) {
             bool shift = ev.xkey.state & ShiftMask;
             if (ks == XK_q || ks == XK_Escape) g_running = false;
             else if (ks == XK_r) {
-                if (shift) reset_pose_carina(g_provider);
-                ori_offset = yaw_twist(head_q);
-                place_screen();
+                if (shift) {
+                    // VIO re-zeros asynchronously — placing now would use the
+                    // stale pose. Defer: re-seed + re-place once it settles.
+                    reset_pose_carina(g_provider);
+                    recenter_at = now_s() + 0.5;
+                } else {
+                    ori_offset = yaw_twist(head_q);
+                    place_screen();
+                }
                 printf("recentered%s\n", shift ? " + VIO reset" : "");
                 tele.log("info", "recentered");
             }
@@ -648,10 +655,16 @@ int main(int argc, char** argv) {
         // ---- dashboard recenter request
         if (tele.reset_requested()) {
             reset_pose_carina(g_provider);
-            ori_offset = yaw_twist(head_q);
-            place_screen();
+            recenter_at = tnow + 0.5;  // re-place after the VIO settles
             printf("recentered + VIO reset (dashboard)\n");
             tele.log("info", "pose reset via dashboard");
+        }
+        // Deferred post-VIO-reset re-place: dropping have_pose re-enters the
+        // first-pose path, which hard-seeds the filters from the fresh pose,
+        // re-derives the yaw offset, and re-places the screen in front.
+        if (recenter_at > 0 && tnow >= recenter_at) {
+            have_pose = false;
+            recenter_at = -1;
         }
 
         // ---- gestures
@@ -797,6 +810,7 @@ int main(int argc, char** argv) {
                     }
                 }
                 if (g_running) {
+                    vkr_wait_uploads(vk);
                     vkr_upload(vk, f.data, size_t(f.pitch) * f.h);
                     cursor_under.valid = false;  // stamp overwritten by the fresh frame
                 }
@@ -811,6 +825,7 @@ int main(int argc, char** argv) {
                 if (cursor_source_origin(outputs, capture_name, glasses.name,
                                          int(vk.tex_w), int(vk.tex_h), sx, sy)) {
                     uint8_t* st = static_cast<uint8_t*>(vk.staging_ptr);
+                    vkr_wait_uploads(vk);
                     cursor_restore(cursor_under, st, vk.tex_pitch);
                     composite_cursor(dpy, st, int(vk.tex_w), int(vk.tex_h),
                                      vk.tex_pitch, sx, sy, cursor_under);

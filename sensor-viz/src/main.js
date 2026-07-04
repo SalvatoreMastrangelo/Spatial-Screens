@@ -152,12 +152,18 @@ $('btn-disconnect').addEventListener('click', () => {
   setStatus('disconnected', 'off');
   setDofBadge(null);
 });
-// Recenter is app-side only (yaw twist + position offset). Deliberately NOT
-// calling reset_pose on the VIO: resetting the tracker origin while also
-// applying the app offset double-recenters, and a VIO reset mid-session
-// discards the map it has built.
+// Recenter: when the bridge is connected, spatial-screens owns the pose —
+// request its full VIO-reset recenter (it also re-places the virtual
+// screen) and drop the local offsets so the re-zeroed stream isn't
+// recentered twice. WebHID has no app side: recenter locally as before.
 $('btn-recenter').addEventListener('click', () => {
-  state.recenter();
+  if (driver?.resetPose) {
+    driver.resetPose();
+    state.clearRecenter();
+    state.log('pose reset requested (app-side recenter)');
+  } else {
+    state.recenter();
+  }
   scene?.clearTrail();
 });
 $('btn-level').addEventListener('click', () => state.level());
