@@ -39,6 +39,14 @@ of you (adding `Shift` also resets the VIO origin), `Ctrl+Alt+[` /
 `--window` mode, the plain keys (`R`, `[`, `]`, `-`, `=`, `Q`/`Esc`)
 additionally work whenever the window has focus.
 
+Gestures (if `gestures/hand_tracker.py`'s dependencies are installed —
+`pip install -r gestures/requirements.txt`): pinch (thumb+index touching)
+and drag vertically for distance, horizontally for size; hold a fist for
+about half a second to recenter. Gestures are additive — the hotkeys above
+always work as a fallback. See
+`../docs/specs/2026-07-03-hand-gesture-control-design.md` for how this
+works.
+
 ## Scope of this spike (per docs/plan/phase2-spatial-screens.md)
 
 - ✅ M2: direct-mode Vulkan presentation on the glasses output — RandR lease

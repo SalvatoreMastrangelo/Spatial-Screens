@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Toolkit for the VITURE Luma Ultra XR glasses, Linux x86_64 only. Two independent modules, each with its own build:
 
 - `sensor-viz/` — web dashboard (vanilla JS ESM + Vite + Three.js; no framework, no TypeScript)
+- `spatial-screens/gestures/` — Python 3 sidecar (MediaPipe Hands) that classifies pinch/pose gestures from the glasses' tracking camera; spawned by `spatial-screens` over a local Unix socket, see `docs/specs/2026-07-03-hand-gesture-control-design.md`
 - `bridge/` — C++17 daemon that streams SDK data (6DoF pose, raw IMU, temp, device events) as JSON over WebSocket at `ws://localhost:8765`; protocol documented in the header comment of `bridge/main.cpp`
 - `sdk/` — vendored closed-source VITURE SDK v2.0.0 (C headers + prebuilt x86_64 `.so`s). © VITURE Inc. — never modify these files, and flag any plan to publish this repo (redistribution is a licensing concern)
 - `reference/` — gitignored third-party prior-art clones. Read-only reference, not this project's code
@@ -22,6 +23,8 @@ Bridge, in `bridge/`:
 - `make install-udev` — installs the udev rule (needs sudo)
 
 No C++ tests, linter, or formatter for `bridge/`. Verification there is manual, on hardware.
+
+Gesture sidecar, in `spatial-screens/gestures/`: `pip install -r requirements.txt` once, then `python3 -m pytest tests/ -v` for the pure-logic unit tests (`protocol.py`, `classify.py`). The sidecar itself (`hand_tracker.py`) isn't run standalone — `spatial-screens` spawns it automatically.
 
 ## Hardware gotchas
 
