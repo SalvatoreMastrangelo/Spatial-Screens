@@ -448,6 +448,8 @@ int main(int argc, char** argv) {
     Quat win_q0;
     float win_max_ang = 0;
     int win_n = 0;
+    bool was_pinching = false;
+    float pinch_prev_x = 0, pinch_prev_y = 0;
 
     printf("running — hotkeys work globally with Ctrl+Alt: R recenter (Shift adds "
            "VIO reset), [ ] distance, - = size, Q quit\n");
@@ -516,8 +518,22 @@ int main(int argc, char** argv) {
         }
         if (!g_running) break;
 
-        // ---- gestures (state wired up in Task 8/9)
+        // ---- gestures
         GestureEvent gev = g_gestures.poll();
+        if (gev.pinching) {
+            if (was_pinching) {
+                float dx = gev.pinch_x - pinch_prev_x; // image space: +x right
+                float dy = gev.pinch_y - pinch_prev_y; // image space: +y down
+                distance = std::clamp(distance - dy * 4.0f, 0.5f, 10.f);
+                diag_in  = std::clamp(diag_in + dx * 200.f, 40.f, 400.f);
+                place_screen();
+            }
+            pinch_prev_x = gev.pinch_x;
+            pinch_prev_y = gev.pinch_y;
+            was_pinching = true;
+        } else {
+            was_pinching = false;
+        }
 
         // ---- pose (predicted, then smoothed)
         float pose[7] = {0};
