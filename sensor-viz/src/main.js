@@ -7,6 +7,7 @@ import { Scope } from './ui/charts.js';
 import {
   showDeviceInfo, showDeviceState, updateCaps, updateStats,
   updateReadouts, renderEventLog, setStatus, setDofBadge,
+  showAppPanel, hideAppPanel,
 } from './ui/panels.js';
 
 const $ = (id) => document.getElementById(id);
@@ -111,6 +112,7 @@ async function connectBridge() {
     else if (first) state.log(`state: ${key} = ${msg.value}`, 'dim');
   });
   d.on('log', (msg) => state.log(`[bridge] ${msg.text}`, 'dim'));
+  d.on('app', (msg) => showAppPanel(msg));
   try {
     setStatus('connecting to bridge…', 'busy');
     await d.connect();
@@ -133,6 +135,7 @@ function teardown() {
   scene?.clearTrail();
   showDeviceInfo(null);
   showDeviceState({});
+  hideAppPanel();
   updateCaps(state.caps);
   $('btn-recenter').disabled = true;
   $('btn-level').disabled = true;

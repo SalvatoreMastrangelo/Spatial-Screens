@@ -93,3 +93,19 @@ export function setDofBadge(mode) {
   b.textContent = mode;
   b.classList.toggle('six', mode === '6DoF');
 }
+
+export function showAppPanel(msg) {
+  $('app-card').hidden = false;
+  $('app-fps').textContent = msg.fps != null ? msg.fps.toFixed(0) : '—';
+  $('app-sixdof').textContent = msg.sixdof ? '6DoF LIVE' : 'orientation only';
+  $('app-anchored').textContent = msg.anchored ? 'yes' : 'no';
+  $('app-distance').textContent = msg.distance != null ? `${fmt(msg.distance, 2)} m` : '—';
+  $('app-size').textContent = msg.size != null ? `${msg.size}"` : '—';
+  $('app-backend').textContent = msg.backend ?? '—';
+  $('app-mode').textContent = msg.direct ? 'direct' : 'window';
+  $('app-rss').textContent = msg.rss != null ? `${msg.rss} MB` : '—';
+}
+
+export function hideAppPanel() {
+  $('app-card').hidden = true;
+}

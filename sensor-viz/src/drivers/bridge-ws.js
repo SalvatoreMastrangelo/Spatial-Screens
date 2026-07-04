@@ -135,6 +135,10 @@ export class BridgeClient {
     case 'log':
       this._emit('log', msg);
       break;
+    case 'app':
+      // spatial-screens status (fps, tracking, screen placement).
+      this._emit('app', msg);
+      break;
     default:
       this._emit('log', { level: 'debug', text: `unknown msg ${msg.type}` });
     }
