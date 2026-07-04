@@ -96,6 +96,10 @@ bool set_option(Options& o, const std::string& k, const std::string& v) {
     if (k == "monitor") o.monitor = v;
     else if (k == "capture") o.capture = v;
     else if (k == "capture-backend") o.capture_backend = v;
+    else if (k == "capture-hz") {
+        float f;
+        if (parse_float(k, v, f)) o.capture_hz = f < 1 ? 1 : (f > 240 ? 240 : int(f));
+    }
     else if (k == "distance") parse_float(k, v, o.distance);
     else if (k == "size") parse_float(k, v, o.size);
     else if (k == "pitch-trim") parse_float(k, v, o.pitch_trim);

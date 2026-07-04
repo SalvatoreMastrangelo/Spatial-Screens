@@ -11,6 +11,7 @@ struct QuadDraw {
     float color[4];
     float rect[4];   // cx, cy, half_w, half_h (quad-local units)
     bool textured;
+    bool circle = false;  // clip to inscribed circle (status dot)
 };
 
 struct VkRend {

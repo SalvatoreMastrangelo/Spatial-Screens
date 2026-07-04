@@ -28,6 +28,7 @@
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/extensions/Xfixes.h>
 #include <X11/extensions/Xrandr.h>
 #include <X11/keysym.h>
 
@@ -115,6 +116,80 @@ static void mat_projection_vk(float rr, float tt, float n, float f, float* m) {
     m[10] = f / (n - f);
     m[11] = -1.f;
     m[14] = n * f / (n - f);
+}
+
+// -------------------------------------------------------- cursor overlay ----
+// Neither capture path delivers the pointer (mutter on X11 ignores the
+// portal's embedded cursor_mode; XShm never grabs it), so blend it in
+// ourselves from XFixes after each frame upload.
+
+// Root-space origin of the captured region: the source rect XShm was built
+// on (capture_name), else the first non-glasses output matching the frame's
+// exact size (portal doesn't say which monitor the user picked). Same-size
+// twin monitors can mismatch under portal; scaled streams get no cursor.
+static bool cursor_source_origin(const std::vector<OutputRect>& outs,
+                                 const std::string& capture_name,
+                                 const std::string& glasses_name,
+                                 int w, int h, int& x, int& y) {
+    for (auto& o : outs)
+        if (!capture_name.empty() && o.name == capture_name && o.w == w && o.h == h) {
+            x = o.x; y = o.y; return true;
+        }
+    for (auto& o : outs)
+        if (o.name != glasses_name && o.w == w && o.h == h) {
+            x = o.x; y = o.y; return true;
+        }
+    return false;
+}
+
+// Saved patch of staging pixels beneath the last cursor stamp, so the
+// pointer can move at the tick rate between (possibly slower) content
+// frames: restore the patch, re-blend at the new position, re-upload.
+struct CursorUnder {
+    std::vector<uint8_t> px;
+    int x = 0, y = 0, w = 0, h = 0;  // rect in frame coords
+    bool valid = false;
+};
+
+static void cursor_restore(CursorUnder& u, uint8_t* dst, uint32_t pitch) {
+    if (!u.valid) return;
+    for (int row = 0; row < u.h; row++)
+        memcpy(dst + size_t(u.y + row) * pitch + size_t(u.x) * 4,
+               u.px.data() + size_t(row) * u.w * 4, size_t(u.w) * 4);
+    u.valid = false;
+}
+
+// Alpha-blend the XFixes cursor (premultiplied ARGB; rows of unsigned long,
+// low 32 bits per pixel) over BGRX pixels, saving the covered rect into `u`
+// first. sx/sy = captured region origin in root space.
+static void composite_cursor(Display* dpy, uint8_t* dst, int w, int h,
+                             uint32_t pitch, int sx, int sy, CursorUnder& u) {
+    XFixesCursorImage* ci = XFixesGetCursorImage(dpy);
+    if (!ci) return;
+    int cx = ci->x - ci->xhot - sx, cy = ci->y - ci->yhot - sy;
+    int x0 = std::max(cx, 0), y0 = std::max(cy, 0);
+    int x1 = std::min(cx + ci->width, w), y1 = std::min(cy + ci->height, h);
+    if (x0 >= x1 || y0 >= y1) { XFree(ci); return; }
+    u.x = x0; u.y = y0; u.w = x1 - x0; u.h = y1 - y0;
+    u.px.resize(size_t(u.w) * u.h * 4);
+    for (int row = 0; row < u.h; row++)
+        memcpy(u.px.data() + size_t(row) * u.w * 4,
+               dst + size_t(u.y + row) * pitch + size_t(u.x) * 4, size_t(u.w) * 4);
+    u.valid = true;
+    for (int dy = y0; dy < y1; dy++) {
+        uint32_t* out = reinterpret_cast<uint32_t*>(dst + size_t(dy) * pitch);
+        const unsigned long* src = ci->pixels + size_t(dy - cy) * ci->width - cx;
+        for (int dx = x0; dx < x1; dx++) {
+            uint32_t s = uint32_t(src[dx]);
+            uint32_t a = s >> 24;
+            if (!a) continue;
+            uint32_t d = out[dx];
+            uint32_t rb = ((d & 0x00ff00ffu) * (255 - a) / 255) & 0x00ff00ffu;
+            uint32_t g = ((d & 0x0000ff00u) * (255 - a) / 255) & 0x0000ff00u;
+            out[dx] = (s & 0x00ffffffu) + rb + g;  // premul src + dst*(1-a)
+        }
+    }
+    XFree(ci);
 }
 
 // ------------------------------------------------------------- SDK glue ----
@@ -282,9 +357,10 @@ int main(int argc, char** argv) {
         }
         if (!ok) {
             printf("usage: %s [--monitor NAME] [--capture NAME|test] "
-                   "[--capture-backend auto|portal|xshm|test] [--distance M] [--size IN] "
-                   "[--pitch-trim DEG] [--predict-ms MS] [--smooth-pos 0..1] [--smooth-ori 0..1] "
-                   "[--ws-port N] [--window] [--config PATH] [--dump-config] [--probe-camera]\n"
+                   "[--capture-backend auto|portal|xshm|test] [--capture-hz N] [--distance M] "
+                   "[--size IN] [--pitch-trim DEG] [--predict-ms MS] [--smooth-pos 0..1] "
+                   "[--smooth-ori 0..1] [--ws-port N] [--window] [--config PATH] "
+                   "[--dump-config] [--probe-camera]\n"
                    "config: %s   state: %s\n",
                    argv[0], config_default_path().c_str(), state_file_path().c_str());
             return 0;
@@ -294,8 +370,8 @@ int main(int argc, char** argv) {
     if (dump_config) {
         printf("# effective options (config %s, state %s)\n",
                config_path.c_str(), state_file_path().c_str());
-        printf("monitor = %s\ncapture = %s\ncapture-backend = %s\n",
-               o.monitor.c_str(), o.capture.c_str(), o.capture_backend.c_str());
+        printf("monitor = %s\ncapture = %s\ncapture-backend = %s\ncapture-hz = %d\n",
+               o.monitor.c_str(), o.capture.c_str(), o.capture_backend.c_str(), o.capture_hz);
         printf("distance = %.3f\nsize = %.1f\npitch-trim = %.2f\npredict-ms = %.2f\n",
                o.distance, o.size, o.pitch_trim, o.predict_ms);
         printf("smooth-pos = %.2f\nsmooth-ori = %.2f\nwindow = %s\nws-port = %d\n",
@@ -307,6 +383,7 @@ int main(int argc, char** argv) {
     // Local aliases: the render loop mutates distance/size at runtime.
     std::string monitor_name = o.monitor, capture_name = o.capture;
     std::string capture_backend = o.capture_backend;
+    int capture_hz = o.capture_hz;
     float distance = o.distance, diag_in = o.size, pitch_trim = o.pitch_trim;
     float predict_ms = o.predict_ms, smooth_pos = o.smooth_pos, smooth_ori = o.smooth_ori;
     bool force_window = o.window;
@@ -317,6 +394,8 @@ int main(int argc, char** argv) {
     if (!dpy) { fprintf(stderr, "cannot open X display\n"); return 1; }
     XSetErrorHandler(on_x_error);
     Window root = DefaultRootWindow(dpy);
+    int xfixes_ev = 0, xfixes_err = 0;
+    bool have_xfixes = XFixesQueryExtension(dpy, &xfixes_ev, &xfixes_err);
 
     // -- pick outputs: glasses = 1920x1200-ish (or --monitor), capture = another
     auto outputs = list_outputs(dpy);
@@ -394,6 +473,10 @@ int main(int argc, char** argv) {
     size_t chain_pos = 0;
     std::unique_ptr<CaptureBackend> cap;
     float cap_aspect = 16.f / 9.f;
+    CursorUnder cursor_under;
+    // The lease just reflowed the desktop and RandR events weren't selected
+    // yet — re-snapshot so cursor mapping starts from live geometry.
+    outputs = list_outputs(dpy);
     auto switch_backend = [&]() {
         while (chain_pos < chain.size()) {
             const std::string& kind = chain[chain_pos++];
@@ -406,7 +489,8 @@ int main(int argc, char** argv) {
                                           [&](const std::string& tok) {
                                               app_state.restore_token = tok;
                                               save_state(app_state);
-                                          });
+                                          },
+                                          capture_hz);
             } else if (kind == "xshm") {
                 auto outs = list_outputs(dpy);
                 OutputRect src{};
@@ -507,7 +591,7 @@ int main(int argc, char** argv) {
         return duration<double>(steady_clock::now().time_since_epoch()).count();
     };
     double last_fps_t = now_s(), last_cap_t = 0;
-    int frames = 0;
+    int frames = 0, cap_frames = 0, last_cap_fps = 0;
     float last_fps = 0;
     int rss_mb = 0;
     bool rss_warned = false, rss_critical = false;
@@ -537,7 +621,8 @@ int main(int argc, char** argv) {
             XNextEvent(dpy, &ev);
             if (ev.type == rr_event_base + RRScreenChangeNotify) {
                 XRRUpdateConfiguration(&ev);
-                if (cap) cap->on_outputs_changed(list_outputs(dpy));
+                outputs = list_outputs(dpy);  // keep fresh for cursor mapping
+                if (cap) cap->on_outputs_changed(outputs);
                 continue;
             }
             if (ev.type != KeyPress) continue;
@@ -553,7 +638,7 @@ int main(int argc, char** argv) {
             }
             else if (ks == XK_bracketleft)  { distance = std::max(0.5f, distance - 0.25f); place_screen(); }
             else if (ks == XK_bracketright) { distance = std::min(10.f, distance + 0.25f); place_screen(); }
-            else if (ks == XK_minus) diag_in = std::max(40.f, diag_in - 10.f);
+            else if (ks == XK_minus) diag_in = std::max(10.f, diag_in - 10.f);
             else if (ks == XK_equal) diag_in = std::min(400.f, diag_in + 10.f);
         }
         if (!g_running) break;
@@ -689,8 +774,8 @@ int main(int argc, char** argv) {
             }
         }
 
-        // ---- capture (30 Hz is plenty; pose stays at panel rate)
-        if (tnow - last_cap_t > 1.0 / 30.0) {
+        // ---- capture (--capture-hz, default 30; pose stays at panel rate)
+        if (tnow - last_cap_t > 1.0 / capture_hz) {
             last_cap_t = tnow;
             if (cap && !cap->alive()) {
                 fprintf(stderr, "capture: %s died — switching\n", cap->name());
@@ -699,6 +784,7 @@ int main(int argc, char** argv) {
             }
             CaptureFrame f{};
             if (cap && cap->latest_frame(f)) {
+                cap_frames++;
                 if (uint32_t(f.w) != vk.tex_w || uint32_t(f.h) != vk.tex_h ||
                     f.pitch != vk.tex_pitch) {
                     vkr_destroy_texture(vk);
@@ -710,7 +796,26 @@ int main(int argc, char** argv) {
                         tele.log("info", "capture source resized - texture rebuilt");
                     }
                 }
-                if (g_running) vkr_upload(vk, f.data, size_t(f.pitch) * f.h);
+                if (g_running) {
+                    vkr_upload(vk, f.data, size_t(f.pitch) * f.h);
+                    cursor_under.valid = false;  // stamp overwritten by the fresh frame
+                }
+            }
+            // Pointer overlay at the tick rate — content frames may arrive
+            // slower (portal only sends on damage), but the cursor should
+            // still move smoothly: restore the pixels under the previous
+            // stamp, re-blend at the current position, re-copy to the GPU.
+            if (g_running && cap && have_xfixes && vk.staging_ptr &&
+                strcmp(cap->name(), "test") != 0) {
+                int sx = 0, sy = 0;
+                if (cursor_source_origin(outputs, capture_name, glasses.name,
+                                         int(vk.tex_w), int(vk.tex_h), sx, sy)) {
+                    uint8_t* st = static_cast<uint8_t*>(vk.staging_ptr);
+                    cursor_restore(cursor_under, st, vk.tex_pitch);
+                    composite_cursor(dpy, st, int(vk.tex_w), int(vk.tex_h),
+                                     vk.tex_pitch, sx, sy, cursor_under);
+                    vk.tex_dirty = true;
+                }
             }
         }
 
@@ -743,18 +848,26 @@ int main(int argc, char** argv) {
                 d.rect[0] = cx; d.rect[1] = cy; d.rect[2] = hw; d.rect[3] = hh;
                 d.textured = textured;
             };
-            // thin frame for depth perception; orange warns that positional
-            // tracking is frozen (orientation-only mode)
             const float white[4] = { 1, 1, 1, 1 };
+            quad(0, 0, w2, h2, white, true);
+
+            // Head-locked tracking-status dot (replaced the old border
+            // frame): blue = 6DoF live, orange = positional tracking frozen
+            // (orientation-only). Fixed in the lower-right of the view —
+            // mvp is projection * translate only, no world transform.
             const float live[4] = { 0.35f, 0.76f, 1.f, 1.f };
             const float frozen[4] = { 1.f, 0.55f, 0.2f, 1.f };
-            const float* bc = sixdof_live ? live : frozen;
-            float bt = 0.004f * diag_m;  // border half-thickness
-            quad(0, 0, w2, h2, white, true);
-            quad(0, h2, w2 + bt, bt, bc, false);
-            quad(0, -h2, w2 + bt, bt, bc, false);
-            quad(-w2, 0, bt, h2 + bt, bc, false);
-            quad(w2, 0, bt, h2 + bt, bc, false);
+            const float DOT_Z = 0.5f;          // meters in front of the eye
+            float tan_r = r / near_z, tan_t = t / near_z;
+            float eye[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
+                              0.95f * tan_r * DOT_Z, -0.95f * tan_t * DOT_Z, -DOT_Z, 1 };
+            QuadDraw& d = draws[ndraw++];
+            mat_mul(proj, eye, d.mvp);
+            memcpy(d.color, sixdof_live ? live : frozen, 4 * sizeof(float));
+            float dot_r = 0.0045f * DOT_Z;     // ~0.5 degrees apparent size
+            d.rect[0] = 0; d.rect[1] = 0; d.rect[2] = dot_r; d.rect[3] = dot_r;
+            d.textured = false;
+            d.circle = true;
         }
         static int draw_fail = 0;
         if (vkr_draw(vk, draws, ndraw)) {
@@ -766,11 +879,13 @@ int main(int argc, char** argv) {
         }
         if (tnow - last_fps_t >= 2.0) {
             last_fps = float(frames / (tnow - last_fps_t));
-            printf("fps %.0f  pose %s  6dof %s  head [%+.3f %+.3f %+.3f]m  dist %.2fm  size %.0f\"\n",
-                   last_fps, have_pose ? "ok" : "waiting",
+            last_cap_fps = int(cap_frames / (tnow - last_fps_t) + 0.5);
+            printf("fps %.0f  cap %d/s  pose %s  6dof %s  head [%+.3f %+.3f %+.3f]m  dist %.2fm  size %.0f\"\n",
+                   last_fps, last_cap_fps, have_pose ? "ok" : "waiting",
                    sixdof_live ? "LIVE" : "frozen",
                    head_p.x, head_p.y, head_p.z, distance, diag_in);
             frames = 0;
+            cap_frames = 0;
             last_fps_t = tnow;
 
             // ---- RSS leak watchdog: sampled on the fps cadence, each

@@ -9,6 +9,7 @@ struct Options {
     std::string monitor;                  // glasses output ("" = autodetect)
     std::string capture;                  // capture monitor ("" = first non-glasses)
     std::string capture_backend = "auto"; // auto|portal|xshm|test
+    int capture_hz = 30;                  // mirrored-content update rate (1..240)
     float distance = 0.75f;               // meters
     float size = 24.f;                    // diagonal inches
     float pitch_trim = 0.f;               // degrees

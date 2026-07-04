@@ -29,7 +29,9 @@ auto|portal|xshm|test` (default `auto`: tries the PipeWire/xdg-desktop-portal
 path first, falls back to XShm, then the test pattern; portal remembers the
 picked monitor across launches via a restore token, and `--capture NAME`
 applies to the XShm backend only — under portal the picker/token owns
-source selection), `--distance M` (default 0.75), `--size INCHES` (diagonal,
+source selection), `--capture-hz N` (mirrored-content update rate, default
+30; also the pointer-overlay rate and the portal stream's negotiated
+framerate default), `--distance M` (default 0.75), `--size INCHES` (diagonal,
 default 24), `--pitch-trim DEG` (camera-rig angle calibration from
 sensor-viz, default 0), `--predict-ms MS` (pose prediction, default 0 —
 extrapolation noise reads as shake), `--smooth-pos 0..1` / `--smooth-ori

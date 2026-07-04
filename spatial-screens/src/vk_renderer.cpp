@@ -523,6 +523,7 @@ bool vkr_draw(VkRend& r, const QuadDraw* draws, int n) {
         memcpy(pb.color, draws[i].color, sizeof(pb.color));
         memcpy(pb.rect, draws[i].rect, sizeof(pb.rect));
         pb.flags[0] = draws[i].textured ? 1.f : 0.f;
+        pb.flags[1] = draws[i].circle ? 1.f : 0.f;
         vkCmdPushConstants(cb, r.playout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(pb), &pb);

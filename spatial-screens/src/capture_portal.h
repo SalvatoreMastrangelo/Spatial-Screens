@@ -25,7 +25,9 @@ struct PortalSession {
 bool portal_open_screencast(const std::string& old_token, PortalSession& out);
 void portal_close_session(PortalSession& s);
 
-// Task 5: the PipeWire-backed CaptureBackend.
+// Task 5: the PipeWire-backed CaptureBackend. max_hz seeds the negotiated
+// framerate's default (the compositor delivers at most this on damage).
 std::unique_ptr<CaptureBackend> capture_create_portal(
     const std::string& old_token,
-    std::function<void(const std::string&)> on_new_token);
+    std::function<void(const std::string&)> on_new_token,
+    int max_hz = 120);

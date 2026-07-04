@@ -16,13 +16,19 @@ via `./run.sh`. Never double-start. After any hard kill in direct mode:
   in Settings) — the hang above triggered on the idle blank a few minutes
   after the hands left the keyboard, not during active use.
 
-- [ ] 1. `./run.sh --pitch-trim 16` — portal picker appears once; pick the
+- [x] 1. `./run.sh --pitch-trim 16` — portal picker appears once; pick the
       laptop monitor. Virtual screen shows that monitor live, cursor visible,
       ~118–120 fps in direct mode. Console says `capture: portal`.
-- [ ] 2. Quit (Ctrl+Alt+Q), relaunch — NO picker dialog (restore token from
+      PASSED 2026-07-04 with one finding: the cursor was NOT in the portal
+      frames (mutter on X11 ignores the embedded cursor_mode) — fixed
+      forward with an XFixes overlay blended each capture tick.
+- [x] 2. Quit (Ctrl+Alt+Q), relaunch — NO picker dialog (restore token from
       `~/.local/state/spatial-screens/state`), same monitor streams.
-- [ ] 3. Live-tune with hotkeys (Ctrl+Alt+[ ] - =), quit, relaunch — tuned
+- [x] 3. Live-tune with hotkeys (Ctrl+Alt+[ ] - =), quit, relaunch — tuned
       distance/size persist. Then `--distance 0.75` on the CLI overrides them.
+      PASSED (distance 1.143 and size 40 restored across runs; CLI won).
+      Finding fixed forward: the size hotkey floor was 40" (default is 24,
+      so sizing back down was impossible) — now 10".
 - [ ] 4. `--capture-backend xshm` — behavior parity with the pre-M3 build
       (monitor content, resize/reflow survival via RandR events).
 - [ ] 5. Fallback: `systemctl --user stop xdg-desktop-portal` then launch —
@@ -34,8 +40,10 @@ via `./run.sh`. Never double-start. After any hard kill in direct mode:
       size/backend/direct correct, values track hotkey changes within ~1 s).
 - [ ] 7. Dashboard Recenter button → screen re-places in front of you; event
       log shows "pose reset via dashboard".
-- [ ] 8. Gestures still work (pinch-drag distance, fist-hold recenter) — the
+- [x] 8. Gestures still work (pinch-drag distance, fist-hold recenter) — the
       capture refactor must not disturb the camera callback path.
+      PASSED (dozens of fist-hold recenters + pinch-drag distance ramps
+      0.5→3.5 m in the run logs).
 - [ ] 9. Kill -9 the app mid-run → relaunch works; portal session from the
       dead run doesn't wedge the new one (GNOME may show a stale sharing
       indicator until the next session — cosmetic only).
@@ -47,9 +55,12 @@ via `./run.sh`. Never double-start. After any hard kill in direct mode:
       and with `--capture-backend test` (isolates capture vs SDK vs gesture
       as the leak source). The app now self-shuts-down gracefully above 8 GB
       to avoid an OOM SIGKILL stranding the display.
-- [ ] 11. Portal cold-grant stall — first-ever launch (no stored restore
+- [x] 11. Portal cold-grant stall — first-ever launch (no stored restore
       token) shows the GNOME screen-share picker and blocks up to 120s
       waiting for your choice; once granted, the token is stored and
       subsequent launches are instant with no dialog. If the picker is
       dismissed/times out, the app falls back to xshm. Verify: fresh launch
       → pick monitor → quit → relaunch shows NO dialog.
+      PASSED (state moved aside to force the cold path; grant → token →
+      instant relaunches all confirmed). Dismiss/timeout→xshm not yet
+      exercised; the portal-stop fallback is item 5.

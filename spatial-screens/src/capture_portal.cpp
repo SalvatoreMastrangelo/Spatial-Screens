@@ -316,8 +316,10 @@ namespace {
 
 class PortalBackend : public CaptureBackend {
 public:
-    PortalBackend(std::string old_token, std::function<void(const std::string&)> on_new_token)
-        : old_token_(std::move(old_token)), on_new_token_(std::move(on_new_token)) {}
+    PortalBackend(std::string old_token, std::function<void(const std::string&)> on_new_token,
+                  int max_hz)
+        : old_token_(std::move(old_token)), on_new_token_(std::move(on_new_token)),
+          max_hz_(max_hz < 1 ? 1 : (max_hz > 240 ? 240 : max_hz)) {}
     ~PortalBackend() override { stop(); }
 
     bool start() override {
@@ -372,7 +374,7 @@ public:
         // Locals, not &SPA_RECTANGLE(...) temporaries — C++ has no compound literals.
         spa_rectangle sz_def = SPA_RECTANGLE(1920, 1080), sz_min = SPA_RECTANGLE(1, 1),
                       sz_max = SPA_RECTANGLE(8192, 8192);
-        spa_fraction fr_def = SPA_FRACTION(30, 1), fr_min = SPA_FRACTION(0, 1),
+        spa_fraction fr_def = SPA_FRACTION(uint32_t(max_hz_), 1), fr_min = SPA_FRACTION(0, 1),
                      fr_max = SPA_FRACTION(240, 1);
         uint8_t podbuf[1024];
         spa_pod_builder b = SPA_POD_BUILDER_INIT(podbuf, sizeof(podbuf));
@@ -459,6 +461,10 @@ private:
             self->front_ = -1;
         }
         self->have_format_ = true;
+        fprintf(stderr, "capture(portal): format %ux%u @ %u/%u fps%s\n",
+                info.size.width, info.size.height,
+                info.framerate.num, info.framerate.denom,
+                info.max_framerate.num ? " (variable)" : "");
         pw_thread_loop_signal(self->loop_, false);
     }
 
@@ -512,12 +518,15 @@ private:
     int front_ = -1;                // -1 = no unconsumed frame
     int w_ = 0, h_ = 0;
     uint32_t pitch_ = 0;
+    int max_hz_ = 120;              // negotiated-framerate default (clamped 1..240)
 };
 
 }  // namespace
 
 std::unique_ptr<CaptureBackend> capture_create_portal(
     const std::string& old_token,
-    std::function<void(const std::string&)> on_new_token) {
-    return std::make_unique<PortalBackend>(std::move(old_token), std::move(on_new_token));
+    std::function<void(const std::string&)> on_new_token,
+    int max_hz) {
+    return std::make_unique<PortalBackend>(std::move(old_token), std::move(on_new_token),
+                                           max_hz);
 }

@@ -3,7 +3,7 @@ SDK_LIB := $(SDK_DIR)/lib/x86_64
 
 CXX ?= g++
 CXXFLAGS := -O2 -std=c++17 -Wall -Wextra -I$(SDK_DIR)/include -I../bridge
-VK_LIBS := -lvulkan -lX11 -lXext -lXrandr
+VK_LIBS := -lvulkan -lX11 -lXext -lXrandr -lXfixes
 
 CAP_PC := dbus-1 libpipewire-0.3
 CAP_CFLAGS := $(shell pkg-config --cflags $(CAP_PC))
