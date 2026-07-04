@@ -44,6 +44,19 @@ POINT = make_landmarks({
     THUMB_TIP: (0.4, 0.7),
 })
 
+# Neither fist (all curled), open_palm (none curled), nor point (only index
+# extended) — index and middle extended, ring and pinky curled. Exercises
+# classify_pose's fallthrough "none" branch.
+MIXED_CURL = make_landmarks({
+    WRIST: (0.5, 0.9),
+    MIDDLE_MCP: (0.5, 0.6),
+    INDEX_PIP: (0.45, 0.5), INDEX_TIP: (0.45, 0.2),      # extended
+    MIDDLE_PIP: (0.50, 0.5), MIDDLE_TIP: (0.50, 0.15),   # extended
+    RING_PIP: (0.55, 0.65), RING_TIP: (0.55, 0.78),      # curled
+    PINKY_PIP: (0.60, 0.68), PINKY_TIP: (0.60, 0.80),    # curled
+    THUMB_TIP: (0.35, 0.6),
+})
+
 
 def test_open_palm_classified_correctly():
     assert classify_pose(OPEN_PALM) == "open_palm"
@@ -55,6 +68,10 @@ def test_fist_classified_correctly():
 
 def test_point_classified_correctly():
     assert classify_pose(POINT) == "point"
+
+
+def test_mixed_curl_classified_as_none():
+    assert classify_pose(MIXED_CURL) == "none"
 
 
 def test_pinch_norm_small_when_fingers_touching():

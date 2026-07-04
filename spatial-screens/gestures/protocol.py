@@ -19,13 +19,16 @@ def read_frame(read_exact):
     """Read one frame message via read_exact(n) -> bytes|None.
 
     Returns (timestamp, width, height, format, data), or None on clean EOF
-    (read_exact returned None while reading the length prefix).
+    (read_exact returned None while reading the length prefix, or the
+    connection dropped partway through the payload).
     """
     length_bytes = read_exact(_LENGTH_PREFIX.size)
     if length_bytes is None:
         return None
     (length,) = _LENGTH_PREFIX.unpack(length_bytes)
     payload = read_exact(length)
+    if payload is None or len(payload) < length:
+        return None
     timestamp, width, height, fmt = _FRAME_HEADER.unpack(payload[: _FRAME_HEADER.size])
     data = payload[_FRAME_HEADER.size :]
     return timestamp, width, height, fmt, data

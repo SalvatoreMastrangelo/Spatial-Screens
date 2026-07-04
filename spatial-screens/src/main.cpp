@@ -121,8 +121,9 @@ static std::atomic<bool> g_running{true};
 static bool g_probe_camera = false;
 static int g_probe_frames_remaining = 0;
 static GestureClient g_gestures;
-static constexpr float PINCH_DISTANCE_SENSITIVITY = 4.0f; // tunable gesture sensitivity — review finding
-static constexpr float PINCH_SIZE_SENSITIVITY = 200.f;    // tunable gesture sensitivity — review finding
+static constexpr float PINCH_DISTANCE_SENSITIVITY = 4.0f; // tune after hands-on test; higher = faster response to hand motion
+static constexpr float PINCH_SIZE_SENSITIVITY = 200.f;    // tune after hands-on test; higher = faster response to hand motion
+static constexpr double FIST_HOLD_SECONDS = 0.5;          // how long a fist must be held before it triggers recenter
 
 static void on_imu_noop(float*, double) {}
 static void on_pose_noop(float*, double) {}
@@ -216,7 +217,6 @@ static std::string executable_dir() {
     return slash == std::string::npos ? "." : path.substr(0, slash);
 }
 
-
 // ---------------------------------------------------------------- main ----
 
 static void on_signal(int) { g_running = false; }
@@ -261,7 +261,7 @@ int main(int argc, char** argv) {
         else {
             printf("usage: %s [--monitor NAME] [--capture NAME|test] [--distance M] "
                    "[--size IN] [--pitch-trim DEG] [--predict-ms MS] "
-                   "[--smooth-pos 0..1] [--smooth-ori 0..1] [--window]\n", argv[0]);
+                   "[--smooth-pos 0..1] [--smooth-ori 0..1] [--window] [--probe-camera]\n", argv[0]);
             return 0;
         }
     }
@@ -538,7 +538,7 @@ int main(int argc, char** argv) {
         GestureEvent gev = g_gestures.poll();
         if (gev.pose == "fist") {
             if (fist_start_s < 0) { fist_start_s = now_s(); fist_triggered = false; }
-            else if (!fist_triggered && now_s() - fist_start_s > 0.5) {
+            else if (!fist_triggered && now_s() - fist_start_s > FIST_HOLD_SECONDS) {
                 ori_offset = yaw_twist(head_q);
                 place_screen();
                 printf("gesture recenter (fist-hold)\n");
