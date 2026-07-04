@@ -119,6 +119,8 @@ static std::atomic<bool> g_running{true};
 static bool g_probe_camera = false;
 static int g_probe_frames_remaining = 0;
 static GestureClient g_gestures;
+static constexpr float PINCH_DISTANCE_SENSITIVITY = 4.0f; // tunable gesture sensitivity — review finding
+static constexpr float PINCH_SIZE_SENSITIVITY = 200.f;    // tunable gesture sensitivity — review finding
 
 static void on_imu_noop(float*, double) {}
 static void on_pose_noop(float*, double) {}
@@ -524,8 +526,8 @@ int main(int argc, char** argv) {
             if (was_pinching) {
                 float dx = gev.pinch_x - pinch_prev_x; // image space: +x right
                 float dy = gev.pinch_y - pinch_prev_y; // image space: +y down
-                distance = std::clamp(distance - dy * 4.0f, 0.5f, 10.f);
-                diag_in  = std::clamp(diag_in + dx * 200.f, 40.f, 400.f);
+                distance = std::clamp(distance - dy * PINCH_DISTANCE_SENSITIVITY, 0.5f, 10.f);
+                diag_in  = std::clamp(diag_in + dx * PINCH_SIZE_SENSITIVITY, 40.f, 400.f);
                 place_screen();
             }
             pinch_prev_x = gev.pinch_x;
