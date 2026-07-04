@@ -32,8 +32,12 @@ strength: per-frame EMA blend for position/orientation, defaults 0.10 /
 0.40, 1 = off), `--window` (force the windowed fallback instead of direct
 display mode).
 
-Keys: `R` recenter and re-place the screen in front of you (`Shift+R` also
-resets the VIO origin), `[` / `]` distance, `-` / `=` size, `Q`/`Esc` quit.
+Keys: the default (direct) mode has no focused window, so only the global
+`Ctrl+Alt` grabs work: `Ctrl+Alt+R` recenter and re-place the screen in front
+of you (adding `Shift` also resets the VIO origin), `Ctrl+Alt+[` /
+`Ctrl+Alt+]` distance, `Ctrl+Alt+-` / `Ctrl+Alt+=` size, `Ctrl+Alt+Q` quit. In
+`--window` mode, the plain keys (`R`, `[`, `]`, `-`, `=`, `Q`/`Esc`)
+additionally work whenever the window has focus.
 
 ## Scope of this spike (per docs/plan/phase2-spatial-screens.md)
 

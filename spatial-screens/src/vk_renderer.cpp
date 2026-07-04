@@ -410,7 +410,12 @@ bool vkr_init_texture(VkRend& r, uint32_t w, uint32_t h, uint32_t pitch_bytes) {
     sub.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     sub.commandBufferCount = 1;
     sub.pCommandBuffers = &cb;
-    vkQueueSubmit(r.queue, 1, &sub, VK_NULL_HANDLE);
+    VkResult subres = vkQueueSubmit(r.queue, 1, &sub, VK_NULL_HANDLE);
+    if (subres != VK_SUCCESS) {
+        fprintf(stderr, "vulkan: submit failed (%d)\n", subres);
+        vkFreeCommandBuffers(r.device, r.pool, 1, &cb);
+        return false;
+    }
     vkQueueWaitIdle(r.queue);
     vkFreeCommandBuffers(r.device, r.pool, 1, &cb);
 
@@ -448,7 +453,9 @@ void vkr_upload(VkRend& r, const void* pixels, size_t bytes) {
 }
 
 bool vkr_draw(VkRend& r, const QuadDraw* draws, int n) {
-    vkWaitForFences(r.device, 1, &r.fence[r.frame], VK_TRUE, UINT64_MAX);
+    if (!r.swapchain) return false;
+    if (vkWaitForFences(r.device, 1, &r.fence[r.frame], VK_TRUE, 2000000000ull) != VK_SUCCESS)
+        return false;  // wedged or lost device: let the caller bail to teardown
     uint32_t img = 0;
     VkResult res = vkAcquireNextImageKHR(r.device, r.swapchain, UINT64_MAX,
                                          r.sem_acquire[r.frame], VK_NULL_HANDLE, &img);
@@ -534,7 +541,11 @@ bool vkr_draw(VkRend& r, const QuadDraw* draws, int n) {
     sub.pCommandBuffers = &cb;
     sub.signalSemaphoreCount = 1;
     sub.pSignalSemaphores = &r.sem_render[img];
-    vkQueueSubmit(r.queue, 1, &sub, r.fence[r.frame]);
+    res = vkQueueSubmit(r.queue, 1, &sub, r.fence[r.frame]);
+    if (res != VK_SUCCESS) {
+        fprintf(stderr, "vulkan: submit failed (%d)\n", res);
+        return false;  // bounded fence wait above makes the next call safe
+    }
 
     VkPresentInfoKHR pri{};
     pri.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;

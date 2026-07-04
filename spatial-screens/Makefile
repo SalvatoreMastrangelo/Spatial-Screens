@@ -14,7 +14,7 @@ OBJS := src/main.o src/vk_renderer.o src/vk_surface.o
 spatial-screens: $(OBJS)
 	$(CXX) $(OBJS) -o $@ $(LDFLAGS)
 
-src/%.o: src/%.cpp $(SHADER_HDRS)
+src/%.o: src/%.cpp $(SHADER_HDRS) src/vk_renderer.h src/vk_surface.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # Generated SPIR-V headers are checked in so builds work without glslang.

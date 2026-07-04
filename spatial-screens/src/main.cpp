@@ -332,11 +332,16 @@ int main(int argc, char** argv) {
     if (!test_pattern) {
         ximg = XShmCreateImage(dpy, DefaultVisual(dpy, DefaultScreen(dpy)), 24,
                                ZPixmap, nullptr, &shm, source.w, source.h);
-        shm.shmid = shmget(IPC_PRIVATE, size_t(ximg->bytes_per_line) * ximg->height, IPC_CREAT | 0600);
-        shm.shmaddr = ximg->data = (char*)shmat(shm.shmid, nullptr, 0);
-        shm.readOnly = False;
-        XShmAttach(dpy, &shm);
-        shmctl(shm.shmid, IPC_RMID, nullptr); // auto-free on detach
+        if (!ximg) {
+            fprintf(stderr, "XShmCreateImage failed — falling back to test pattern\n");
+            test_pattern = true;
+        } else {
+            shm.shmid = shmget(IPC_PRIVATE, size_t(ximg->bytes_per_line) * ximg->height, IPC_CREAT | 0600);
+            shm.shmaddr = ximg->data = (char*)shmat(shm.shmid, nullptr, 0);
+            shm.readOnly = False;
+            XShmAttach(dpy, &shm);
+            shmctl(shm.shmid, IPC_RMID, nullptr); // auto-free on detach
+        }
     }
 
     // -- capture texture
@@ -411,7 +416,7 @@ int main(int argc, char** argv) {
 
     while (g_running) {
         // ---- input
-        while (XPending(dpy)) {
+        while (g_running && XPending(dpy)) {
             XEvent ev;
             XNextEvent(dpy, &ev);
             if (ev.type == rr_event_base + RRScreenChangeNotify) {
@@ -601,8 +606,14 @@ int main(int argc, char** argv) {
             quad(-w2, 0, bt, h2 + bt, bc, false);
             quad(w2, 0, bt, h2 + bt, bc, false);
         }
-        vkr_draw(vk, draws, ndraw);
-        frames++;
+        static int draw_fail = 0;
+        if (vkr_draw(vk, draws, ndraw)) {
+            draw_fail = 0;
+            frames++;
+        } else if (++draw_fail >= 120) {
+            fprintf(stderr, "presentation failed repeatedly — shutting down\n");
+            g_running = false;
+        }
         if (tnow - last_fps_t >= 2.0) {
             printf("fps %.0f  pose %s  6dof %s  head [%+.3f %+.3f %+.3f]m  dist %.2fm  size %.0f\"\n",
                    frames / (tnow - last_fps_t), have_pose ? "ok" : "waiting",

@@ -8,12 +8,19 @@
 
 #include <X11/Xatom.h>
 #include <cstdio>
-#include <cstring>
 #include <unistd.h>
 
 // Restore races the server's async lease teardown; RandR calls during the
 // window raise BadAccess, which must not kill the process mid-restore.
 static int ignore_x_error(Display*, XErrorEvent*) { return 0; }
+
+// Scoped swallow-all X error handler: direct_acquire/direct_restore must
+// survive RandR errors even in binaries without a global handler (vk-test).
+struct x_error_guard {
+    XErrorHandler old;
+    x_error_guard() : old(XSetErrorHandler(ignore_x_error)) {}
+    ~x_error_guard() { XSetErrorHandler(old); }
+};
 
 std::vector<OutputRect> list_outputs(Display* dpy) {
     std::vector<OutputRect> out;
@@ -111,6 +118,7 @@ bool direct_acquire(Display* dpy, VkInstance inst, RROutput out_id, SurfaceOut& 
         fprintf(stderr, "direct mode: server has no non-desktop property\n");
         return false;
     }
+    x_error_guard xguard;
 
     // Save current config for restore.
     XRRScreenResources* res = XRRGetScreenResourcesCurrent(dpy, root);
