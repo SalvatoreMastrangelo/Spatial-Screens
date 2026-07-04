@@ -175,16 +175,32 @@ void GestureClient::maybe_send_frame(const uint8_t* gray8, int width, int height
     // from misaligned pixel bytes and hangs forever. Loop until the whole
     // message is sent; on EAGAIN (buffer momentarily full), wait briefly
     // for room via poll() rather than treating it as fatal.
+    //
+    // send_deadline_s is a single aggregate 200ms deadline for this entire
+    // call, not a per-iteration timeout: this function runs under mutex_,
+    // which poll()/stop() on the main render thread also take, so a
+    // persistently-slow-draining peer must not be able to extend our hold
+    // on the lock indefinitely by trickling out partial writes (each of
+    // which would otherwise reset a fresh 200ms clock).
+    const double send_deadline_s = now_s() + 0.2;
     size_t sent_total = 0;
     while (sent_total < msg.size()) {
+        double t_now = now_s();
+        if (t_now >= send_deadline_s) {
+            fprintf(stderr, "gestures: send() timed out waiting for sidecar to drain — disabling gesture control\n");
+            enabled_ = false;
+            return;
+        }
         ssize_t sent = send(conn_fd_, msg.data() + sent_total, msg.size() - sent_total, MSG_NOSIGNAL);
         if (sent > 0) {
             sent_total += size_t(sent);
             continue;
         }
         if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            int timeout_ms = int((send_deadline_s - t_now) * 1000.0);
+            if (timeout_ms < 0) timeout_ms = 0;
             pollfd pfd{ conn_fd_, POLLOUT, 0 };
-            if (::poll(&pfd, 1, 200 /*ms*/) > 0) continue;
+            if (::poll(&pfd, 1, timeout_ms) > 0) continue;
             fprintf(stderr, "gestures: send() timed out waiting for sidecar to drain — disabling gesture control\n");
             enabled_ = false;
             return;

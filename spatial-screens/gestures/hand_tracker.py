@@ -36,7 +36,25 @@ def _ensure_model():
     if not os.path.exists(_MODEL_PATH):
         os.makedirs(os.path.dirname(_MODEL_PATH), exist_ok=True)
         print(f"hand_tracker: downloading hand landmark model to {_MODEL_PATH}", file=sys.stderr)
-        urllib.request.urlretrieve(_MODEL_URL, _MODEL_PATH)
+        # Download to a temp file in the *same directory* as the final path
+        # (not tempfile's default dir, which may be on a different
+        # filesystem and would make the rename below fail or silently fall
+        # back to a non-atomic copy), then rename into place only once the
+        # download has fully succeeded. Otherwise an interrupted download
+        # (network drop, Ctrl-C, disk full) leaves a partial/corrupt file at
+        # _MODEL_PATH that the os.path.exists() check above would then
+        # silently reuse forever, permanently breaking
+        # HandLandmarker.create_from_options().
+        tmp_path = _MODEL_PATH + f".tmp-{os.getpid()}"
+        try:
+            urllib.request.urlretrieve(_MODEL_URL, tmp_path)
+            os.replace(tmp_path, _MODEL_PATH)
+        except BaseException:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
     return _MODEL_PATH
 
 
