@@ -873,15 +873,19 @@ int main(int argc, char** argv) {
             d.textured = false;
             d.circle = true;
 
+            // Shared "pinch active" green — the pinch-status dot and the
+            // fingertip highlight must use the same green (design: the two
+            // feedback channels agree).
+            const float status_green[4] = { 0.20f, 0.90f, 0.30f, 1.f };
+
             // Pinch-status dot, just left of the VO tracking-status dot (which
             // is at x-factor 0.95). Only shown while the gesture pipeline is
             // live (a grey dot with no sidecar would falsely imply "running,
             // no hand seen").  no hand -> grey, hand seen -> blue, pinch -> green.
             if (g_gestures.enabled()) {
-                const float grey[4]  = { 0.5f, 0.5f, 0.5f, 1.f };
-                const float hand[4]  = { 0.30f, 0.55f, 1.f, 1.f };
-                const float pinch[4] = { 0.20f, 0.90f, 0.30f, 1.f };
-                const float* pcol = !gev.present ? grey : (gev.pinching ? pinch : hand);
+                const float grey[4] = { 0.5f, 0.5f, 0.5f, 1.f };
+                const float hand[4] = { 0.30f, 0.55f, 1.f, 1.f };
+                const float* pcol = !gev.present ? grey : (gev.pinching ? status_green : hand);
                 float peye[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
                                    0.90f * tan_r * DOT_Z, -0.95f * tan_t * DOT_Z, -DOT_Z, 1 };
                 QuadDraw& pd = draws[ndraw++];
@@ -908,10 +912,9 @@ int main(int argc, char** argv) {
                                    -0.55f * tan_r * DOT_Z, -0.45f * tan_t * DOT_Z, -DOT_Z, 1 };
                 float panel_mvp[16];
                 mat_mul(proj, leye, panel_mvp);
-                const float lm_col[4]  = { 0.40f, 0.90f, 1.00f, 1.f }; // soft cyan
-                const float tip[4]     = { 1.00f, 0.85f, 0.10f, 1.f }; // yellow
-                const float tip_pin[4] = { 0.20f, 0.90f, 0.30f, 1.f }; // green
-                const float lm_r = 0.010f * DOT_Z;
+                const float lm_col[4] = { 0.40f, 0.90f, 1.00f, 1.f }; // soft cyan
+                const float tip[4]    = { 1.00f, 0.85f, 0.10f, 1.f }; // yellow (thumb/index tip)
+                const float lm_r = 0.010f * DOT_Z;   // ~1 degree apparent size
                 for (int i = 0; i < 21 && ndraw < 32; i++) {
                     float nx = gev.landmarks[i][0];
                     float ny = gev.landmarks[i][1];
@@ -922,7 +925,7 @@ int main(int argc, char** argv) {
                     float lx =  (nx - 0.5f) * 2.f * PANEL_W;
                     float ly = -(ny - 0.5f) * 2.f * PANEL_H;
                     const float* col = (i == 4 || i == 8)
-                                         ? (gev.pinching ? tip_pin : tip) : lm_col;
+                                         ? (gev.pinching ? status_green : tip) : lm_col;
                     QuadDraw& ld = draws[ndraw++];
                     memcpy(ld.mvp, panel_mvp, sizeof(panel_mvp));
                     memcpy(ld.color, col, 4 * sizeof(float));

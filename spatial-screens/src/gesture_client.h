@@ -17,7 +17,7 @@ struct GestureEvent {
     bool pinching = false;   // pinch_norm < PINCH_THRESHOLD
     float pinch_x = 0.f, pinch_y = 0.f; // normalized [0,1] pinch midpoint
     std::string pose;        // "open_palm" | "fist" | "point" | "none" | ""
-    float landmarks[21][2] = {}; // normalized [0,1] image coords (x-right, y-down)
+    float landmarks[21][2] = {}; // MediaPipe hand, normalized [0,1] image coords (x-right, y-down); thumb tip = [4], index tip = [8]
     bool has_landmarks = false;  // true iff a full 21-point array parsed
 };
 
