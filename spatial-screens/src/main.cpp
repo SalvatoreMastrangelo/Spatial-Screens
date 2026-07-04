@@ -2,9 +2,11 @@
 //
 // Places one virtual screen in 3D space using the Luma Ultra's 6DoF pose and
 // renders it fullscreen on the glasses' display. The screen is textured with
-// a live X11 capture of a source monitor (XShm) or a test pattern.
+// a live capture from a pluggable backend (--capture-backend): a source
+// monitor via XShm, or a test pattern.
 //
-//   ./run.sh [--monitor NAME] [--capture NAME|test] [--distance M]
+//   ./run.sh [--monitor NAME] [--capture NAME|test]
+//            [--capture-backend auto|portal|xshm|test] [--distance M]
 //            [--size INCHES] [--pitch-trim DEG] [--predict-ms MS]
 //
 // Keys:  R recenter (re-place screen in front of you)
@@ -26,11 +28,8 @@
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
-#include <X11/extensions/XShm.h>
 #include <X11/extensions/Xrandr.h>
 #include <X11/keysym.h>
-#include <sys/ipc.h>
-#include <sys/shm.h>
 
 #include <algorithm>
 #include <atomic>
@@ -49,6 +48,7 @@
 #include "vk_renderer.h"
 #include "vk_surface.h"
 #include "gesture_client.h"
+#include "capture.h"
 
 // ---------------------------------------------------------------- math ----
 
@@ -231,6 +231,7 @@ static int on_x_error(Display*, XErrorEvent* e) {
 
 int main(int argc, char** argv) {
     std::string monitor_name, capture_name;
+    std::string capture_backend = "auto";
     // Defaults sized to FIT the Ultra's 52-degree FOV with margin: at 2 m the
     // panel shows ~85 inches full-width — a 60-inch screen leaves the frame
     // and the world visible around it, which is what makes 6DoF perceivable.
@@ -249,6 +250,7 @@ int main(int argc, char** argv) {
         auto next = [&](float& v) { if (i + 1 < argc) v = atof(argv[++i]); };
         if (!strcmp(argv[i], "--monitor") && i + 1 < argc) monitor_name = argv[++i];
         else if (!strcmp(argv[i], "--capture") && i + 1 < argc) capture_name = argv[++i];
+        else if (!strcmp(argv[i], "--capture-backend") && i + 1 < argc) capture_backend = argv[++i];
         else if (!strcmp(argv[i], "--distance")) next(distance);
         else if (!strcmp(argv[i], "--size")) next(diag_in);
         else if (!strcmp(argv[i], "--pitch-trim")) next(pitch_trim);
@@ -258,12 +260,14 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--window")) force_window = true;
         else if (!strcmp(argv[i], "--probe-camera")) { g_probe_camera = true; g_probe_frames_remaining = 10; }
         else {
-            printf("usage: %s [--monitor NAME] [--capture NAME|test] [--distance M] "
+            printf("usage: %s [--monitor NAME] [--capture NAME|test] "
+                   "[--capture-backend auto|portal|xshm|test] [--distance M] "
                    "[--size IN] [--pitch-trim DEG] [--predict-ms MS] "
                    "[--smooth-pos 0..1] [--smooth-ori 0..1] [--window] [--probe-camera]\n", argv[0]);
             return 0;
         }
     }
+    if (capture_name == "test") { capture_backend = "test"; capture_name.clear(); }
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 
@@ -274,8 +278,8 @@ int main(int argc, char** argv) {
 
     // -- pick outputs: glasses = 1920x1200-ish (or --monitor), capture = another
     auto outputs = list_outputs(dpy);
-    OutputRect glasses{}, source{};
-    bool have_glasses = false, have_source = false;
+    OutputRect glasses{};
+    bool have_glasses = false;
     printf("outputs:\n");
     for (auto& o : outputs) printf("  %-10s %dx%d+%d+%d\n", o.name.c_str(), o.w, o.h, o.x, o.y);
     for (auto& o : outputs) {
@@ -292,20 +296,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "glasses display not found (no 1920x1200 output; use --monitor NAME)\n");
         return 1;
     }
-    bool test_pattern = capture_name == "test";
-    if (!test_pattern) {
-        for (auto& o : outputs) {
-            if (!capture_name.empty() ? o.name == capture_name : o.name != glasses.name) {
-                source = o; have_source = true; break;
-            }
-        }
-        if (!have_source) {
-            printf("no capture source — falling back to test pattern\n");
-            test_pattern = true;
-        }
-    }
-    printf("glasses: %s (%dx%d)  capture: %s\n", glasses.name.c_str(), glasses.w, glasses.h,
-           test_pattern ? "test pattern" : source.name.c_str());
+    printf("glasses: %s (%dx%d)\n", glasses.name.c_str(), glasses.w, glasses.h);
 
     // -- Vulkan: direct display (default) or EWMH-fullscreen window fallback
     VkRend vk{};
@@ -331,17 +322,6 @@ int main(int argc, char** argv) {
         if (sout.direct) direct_restore(dpy);
         return 1;
     }
-    // Direct mode reflowed the desktop: the capture source rect moved.
-    if (sout.direct && !test_pattern) {
-        outputs = list_outputs(dpy);
-        bool still_there = false;
-        for (auto& o : outputs)
-            if (o.name == source.name) { source = o; still_there = true; break; }
-        if (!still_there) {
-            printf("capture source disappeared — falling back to test pattern\n");
-            test_pattern = true;
-        }
-    }
     int rr_event_base = 0, rr_error_base = 0;
     XRRQueryExtension(dpy, &rr_event_base, &rr_error_base);
     XRRSelectInput(dpy, root, RRScreenChangeNotifyMask);
@@ -364,37 +344,61 @@ int main(int argc, char** argv) {
         }
     }
 
-    // -- capture setup (XShm full-source-monitor grabs)
-    XShmSegmentInfo shm{};
-    XImage* ximg = nullptr;
-    if (!test_pattern) {
-        ximg = XShmCreateImage(dpy, DefaultVisual(dpy, DefaultScreen(dpy)), 24,
-                               ZPixmap, nullptr, &shm, source.w, source.h);
-        if (!ximg) {
-            fprintf(stderr, "XShmCreateImage failed — falling back to test pattern\n");
-            test_pattern = true;
-        } else {
-            shm.shmid = shmget(IPC_PRIVATE, size_t(ximg->bytes_per_line) * ximg->height, IPC_CREAT | 0600);
-            shm.shmaddr = ximg->data = (char*)shmat(shm.shmid, nullptr, 0);
-            shm.readOnly = False;
-            XShmAttach(dpy, &shm);
-            shmctl(shm.shmid, IPC_RMID, nullptr); // auto-free on detach
+    // -- capture backend chain: auto = xshm -> test; explicit backend -> test
+    std::vector<std::string> chain;
+    if (capture_backend == "auto") chain = { "xshm", "test" };
+    else if (capture_backend != "test") chain = { capture_backend, "test" };
+    else chain = { "test" };
+    size_t chain_pos = 0;
+    std::unique_ptr<CaptureBackend> cap;
+    float cap_aspect = 16.f / 9.f;
+    auto switch_backend = [&]() {
+        while (chain_pos < chain.size()) {
+            const std::string& kind = chain[chain_pos++];
+            std::unique_ptr<CaptureBackend> b;
+            if (kind == "xshm") {
+                auto outs = list_outputs(dpy);
+                OutputRect src{};
+                bool found = false;
+                for (auto& o : outs)
+                    if (!capture_name.empty() ? o.name == capture_name
+                                              : o.name != glasses.name) { src = o; found = true; break; }
+                if (found) b = capture_create_xshm(dpy, src);
+                else fprintf(stderr, "capture: no xshm source monitor\n");
+            } else if (kind == "test") {
+                b = capture_create_test();
+            } else {
+                fprintf(stderr, "capture: unknown backend %s\n", kind.c_str());
+            }
+            if (b && b->start()) {
+                cap = std::move(b);
+                printf("capture: %s\n", cap->name());
+                return;
+            }
+            if (b) fprintf(stderr, "capture: %s failed to start — falling back\n", kind.c_str());
         }
-    }
+    };
+    switch_backend();
 
-    // -- capture texture
-    int tex_w = test_pattern ? 1024 : source.w;
-    int tex_h = test_pattern ? 576 : source.h;
-    uint32_t tex_pitch = test_pattern ? uint32_t(tex_w) * 4
-                                      : uint32_t(ximg->bytes_per_line);
+    // -- capture texture: prefer real dims from a first frame
+    CaptureFrame first{};
+    for (int i = 0; i < 200 && cap && !cap->latest_frame(first); i++)
+        usleep(10 * 1000);
+    uint32_t tex_w = first.data ? uint32_t(first.w) : 1024;
+    uint32_t tex_h = first.data ? uint32_t(first.h) : 576;
+    uint32_t tex_pitch = first.data ? first.pitch : 1024 * 4;
     if (!vkr_init_texture(vk, tex_w, tex_h, tex_pitch)) {
+        if (cap) cap->stop();
         vkr_destroy_device(vk);
         if (sout.direct) direct_release(vk.instance);
         vkr_destroy(vk);
         if (sout.direct) direct_restore(dpy);
         return 1;
     }
-    std::vector<uint32_t> pattern(size_t(tex_w) * tex_h);
+    if (first.data) {
+        vkr_upload(vk, first.data, size_t(first.pitch) * first.h);
+        cap_aspect = float(first.w) / float(first.h);
+    }
 
     // -- SDK last (it takes a second; window is already up)
     if (!sdk_init()) {
@@ -425,7 +429,6 @@ int main(int argc, char** argv) {
     Quat trim = quat_axis_angle(1, 0, 0, pitch_trim);
     Quat anchor_q; Vec3 anchor_p; // virtual screen pose
     bool anchored = false;
-    float cap_aspect = test_pattern ? 16.f / 9.f : float(source.w) / float(source.h);
 
     auto place_screen = [&]() {
         Quat basis = yaw_twist(qmul(qconj(ori_offset), head_q));
@@ -468,44 +471,7 @@ int main(int argc, char** argv) {
             XNextEvent(dpy, &ev);
             if (ev.type == rr_event_base + RRScreenChangeNotify) {
                 XRRUpdateConfiguration(&ev);
-                if (!test_pattern) {
-                    auto outs = list_outputs(dpy);
-                    for (auto& o : outs) {
-                        if (o.name != source.name) continue;
-                        if (o.w != source.w || o.h != source.h) {
-                            // Source resized: rebuild the XShm segment + texture.
-                            XShmDetach(dpy, &shm);
-                            XDestroyImage(ximg);
-                            shmdt(shm.shmaddr);
-                            source = o;
-                            ximg = XShmCreateImage(dpy, DefaultVisual(dpy, DefaultScreen(dpy)),
-                                                   24, ZPixmap, nullptr, &shm, source.w, source.h);
-                            if (!ximg) {
-                                fprintf(stderr, "capture rebuild failed (XShmCreateImage)\n");
-                                g_running = false;
-                                break;
-                            }
-                            shm.shmid = shmget(IPC_PRIVATE,
-                                               size_t(ximg->bytes_per_line) * ximg->height,
-                                               IPC_CREAT | 0600);
-                            shm.shmaddr = ximg->data = (char*)shmat(shm.shmid, nullptr, 0);
-                            shm.readOnly = False;
-                            XShmAttach(dpy, &shm);
-                            shmctl(shm.shmid, IPC_RMID, nullptr);
-                            vkr_destroy_texture(vk);
-                            if (!vkr_init_texture(vk, source.w, source.h,
-                                                  uint32_t(ximg->bytes_per_line))) {
-                                fprintf(stderr, "capture rebuild failed (texture)\n");
-                                g_running = false;
-                                break;
-                            }
-                            cap_aspect = float(source.w) / float(source.h);
-                        } else {
-                            source = o;  // moved only: new grab origin
-                        }
-                        break;
-                    }
-                }
+                if (cap) cap->on_outputs_changed(list_outputs(dpy));
                 continue;
             }
             if (ev.type != KeyPress) continue;
@@ -643,15 +609,24 @@ int main(int argc, char** argv) {
         double tnow = now_s();
         if (tnow - last_cap_t > 1.0 / 30.0) {
             last_cap_t = tnow;
-            if (test_pattern) {
-                int shift_px = int(tnow * 40) % 64;
-                for (int y = 0; y < tex_h; y++)
-                    for (int x = 0; x < tex_w; x++)
-                        pattern[size_t(y) * tex_w + x] =
-                            (((x + shift_px) / 64 + y / 64) & 1) ? 0xff2d3646 : 0xff59c2ff;
-                vkr_upload(vk, pattern.data(), pattern.size() * 4);
-            } else if (XShmGetImage(dpy, root, ximg, source.x, source.y, AllPlanes)) {
-                vkr_upload(vk, ximg->data, size_t(ximg->bytes_per_line) * ximg->height);
+            if (cap && !cap->alive()) {
+                fprintf(stderr, "capture: %s died — switching\n", cap->name());
+                cap->stop();
+                switch_backend();
+            }
+            CaptureFrame f{};
+            if (cap && cap->latest_frame(f)) {
+                if (uint32_t(f.w) != vk.tex_w || uint32_t(f.h) != vk.tex_h ||
+                    f.pitch != vk.tex_pitch) {
+                    vkr_destroy_texture(vk);
+                    if (!vkr_init_texture(vk, f.w, f.h, f.pitch)) {
+                        fprintf(stderr, "capture texture rebuild failed\n");
+                        g_running = false;
+                    } else {
+                        cap_aspect = float(f.w) / float(f.h);
+                    }
+                }
+                if (g_running) vkr_upload(vk, f.data, size_t(f.pitch) * f.h);
             }
         }
 
@@ -720,7 +695,7 @@ int main(int argc, char** argv) {
     xr_device_provider_stop(g_provider);
     xr_device_provider_shutdown(g_provider);
     xr_device_provider_destroy(g_provider);
-    if (ximg) { XShmDetach(dpy, &shm); XDestroyImage(ximg); shmdt(shm.shmaddr); }
+    if (cap) cap->stop();
     vkr_destroy_device(vk);                        // swapchain/surface/device first
     if (sout.direct) direct_release(vk.instance);  // drop the lease (instance teardown never does)
     vkr_destroy(vk);

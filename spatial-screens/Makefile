@@ -19,7 +19,7 @@ spatial-screens: $(OBJS)
 src/gesture_client.o: src/gesture_client.cpp src/gesture_client.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-src/main.o: src/gesture_client.h
+src/main.o: src/gesture_client.h src/capture.h
 
 src/%.o: src/%.cpp $(SHADER_HDRS) src/vk_renderer.h src/vk_surface.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
