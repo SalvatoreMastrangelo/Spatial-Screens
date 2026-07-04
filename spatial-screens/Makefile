@@ -10,7 +10,7 @@ LDFLAGS := -L$(SDK_LIB) -lglasses $(VK_LIBS) -lpthread \
 
 SHADER_HDRS := shaders/quad.vert.spv.h shaders/quad.frag.spv.h
 OBJS := src/main.o src/vk_renderer.o src/vk_surface.o src/gesture_client.o \
-        src/capture.o src/capture_xshm.o
+        src/capture.o src/capture_xshm.o src/config.o
 
 spatial-screens: $(OBJS)
 	$(CXX) $(OBJS) -o $@ $(LDFLAGS)
@@ -19,7 +19,10 @@ spatial-screens: $(OBJS)
 src/gesture_client.o: src/gesture_client.cpp src/gesture_client.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-src/main.o: src/gesture_client.h src/capture.h
+src/config.o: src/config.cpp src/config.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+src/main.o: src/gesture_client.h src/capture.h src/config.h
 
 src/%.o: src/%.cpp $(SHADER_HDRS) src/vk_renderer.h src/vk_surface.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@

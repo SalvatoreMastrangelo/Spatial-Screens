@@ -1,0 +1,43 @@
+// Options resolution for spatial-screens: compiled defaults < config file
+// (~/.config/spatial-screens.conf, user-authored, read-only) < state file
+// (~/.local/state/spatial-screens/state, app-written) < CLI flags.
+// See docs/specs/2026-07-04-m3-remainder-design.md §2.
+#pragma once
+#include <string>
+
+struct Options {
+    std::string monitor;                  // glasses output ("" = autodetect)
+    std::string capture;                  // capture monitor ("" = first non-glasses)
+    std::string capture_backend = "auto"; // auto|portal|xshm|test
+    float distance = 0.75f;               // meters
+    float size = 24.f;                    // diagonal inches
+    float pitch_trim = 0.f;               // degrees
+    float predict_ms = 0.f;
+    float smooth_pos = 0.10f;
+    float smooth_ori = 0.40f;
+    bool window = false;
+    int ws_port = 8765;                   // 0 = telemetry disabled
+};
+
+// Live-tuned values + portal restore token. Whole file rewritten atomically
+// on clean exit and whenever a new restore token arrives.
+struct AppState {
+    float distance = -1.f;                // < 0 = unset
+    float size = -1.f;
+    std::string restore_token;
+};
+
+std::string config_default_path();  // $XDG_CONFIG_HOME|~/.config + /spatial-screens.conf
+std::string state_file_path();      // $XDG_STATE_HOME|~/.local/state + /spatial-screens/state
+
+// Applies one "key value" pair using the config-key spelling (e.g.
+// "capture-backend"). Returns false for unknown keys; warns to stderr (and
+// still returns true) for unparsable numeric values.
+bool set_option(Options& o, const std::string& key, const std::string& value);
+
+// INI-style "key = value", '#' comments, no sections. Missing file is fine
+// (warn only if warn_missing); bad lines warn and are skipped.
+void load_options_file(const std::string& path, Options& o, bool warn_missing);
+
+void load_state(AppState& s);
+bool save_state(const AppState& s);

@@ -49,6 +49,7 @@
 #include "vk_surface.h"
 #include "gesture_client.h"
 #include "capture.h"
+#include "config.h"
 
 // ---------------------------------------------------------------- math ----
 
@@ -230,8 +231,6 @@ static int on_x_error(Display*, XErrorEvent* e) {
 }
 
 int main(int argc, char** argv) {
-    std::string monitor_name, capture_name;
-    std::string capture_backend = "auto";
     // Defaults sized to FIT the Ultra's 52-degree FOV with margin: at 2 m the
     // panel shows ~85 inches full-width — a 60-inch screen leaves the frame
     // and the world visible around it, which is what makes 6DoF perceivable.
@@ -240,34 +239,58 @@ int main(int argc, char** argv) {
     // 24" at 0.75 m = desk-monitor ergonomics that fit the 52-degree FOV.
     // Prediction stays 0: extrapolation noise feeds the filter's speed
     // estimate and reads as shake (verified across builds).
-    float distance = 0.75f, diag_in = 24.f, pitch_trim = 0.f, predict_ms = 0.f;
     // Pose smoothing (EMA blend factor per frame, 1 = off). Position gets a
     // heavy filter — VIO translation is where the jitter lives; orientation
     // stays light so head tracking doesn't feel laggy.
-    float smooth_pos = 0.10f, smooth_ori = 0.40f;
-    bool force_window = false;
+    Options o;
+    AppState app_state;
+    std::string config_path = config_default_path();
+    bool config_explicit = false, dump_config = false;
+    for (int i = 1; i < argc; i++)
+        if (!strcmp(argv[i], "--config") && i + 1 < argc) { config_path = argv[++i]; config_explicit = true; }
+    load_options_file(config_path, o, config_explicit);
+    load_state(app_state);
+    if (app_state.distance > 0) o.distance = app_state.distance;
+    if (app_state.size > 0) o.size = app_state.size;
     for (int i = 1; i < argc; i++) {
-        auto next = [&](float& v) { if (i + 1 < argc) v = atof(argv[++i]); };
-        if (!strcmp(argv[i], "--monitor") && i + 1 < argc) monitor_name = argv[++i];
-        else if (!strcmp(argv[i], "--capture") && i + 1 < argc) capture_name = argv[++i];
-        else if (!strcmp(argv[i], "--capture-backend") && i + 1 < argc) capture_backend = argv[++i];
-        else if (!strcmp(argv[i], "--distance")) next(distance);
-        else if (!strcmp(argv[i], "--size")) next(diag_in);
-        else if (!strcmp(argv[i], "--pitch-trim")) next(pitch_trim);
-        else if (!strcmp(argv[i], "--predict-ms")) next(predict_ms);
-        else if (!strcmp(argv[i], "--smooth-pos")) next(smooth_pos);
-        else if (!strcmp(argv[i], "--smooth-ori")) next(smooth_ori);
-        else if (!strcmp(argv[i], "--window")) force_window = true;
-        else if (!strcmp(argv[i], "--probe-camera")) { g_probe_camera = true; g_probe_frames_remaining = 10; }
-        else {
+        const char* a = argv[i];
+        bool ok = false;
+        if (!strncmp(a, "--", 2)) {
+            a += 2;
+            if (!strcmp(a, "config")) { i++; ok = true; }  // handled in the pre-pass
+            else if (!strcmp(a, "window")) { o.window = true; ok = true; }
+            else if (!strcmp(a, "dump-config")) { dump_config = true; ok = true; }
+            else if (!strcmp(a, "probe-camera")) { g_probe_camera = true; g_probe_frames_remaining = 10; ok = true; }
+            else if (i + 1 < argc) ok = set_option(o, a, argv[++i]);
+        }
+        if (!ok) {
             printf("usage: %s [--monitor NAME] [--capture NAME|test] "
-                   "[--capture-backend auto|portal|xshm|test] [--distance M] "
-                   "[--size IN] [--pitch-trim DEG] [--predict-ms MS] "
-                   "[--smooth-pos 0..1] [--smooth-ori 0..1] [--window] [--probe-camera]\n", argv[0]);
+                   "[--capture-backend auto|portal|xshm|test] [--distance M] [--size IN] "
+                   "[--pitch-trim DEG] [--predict-ms MS] [--smooth-pos 0..1] [--smooth-ori 0..1] "
+                   "[--ws-port N] [--window] [--config PATH] [--dump-config] [--probe-camera]\n"
+                   "config: %s   state: %s\n",
+                   argv[0], config_default_path().c_str(), state_file_path().c_str());
             return 0;
         }
     }
-    if (capture_name == "test") { capture_backend = "test"; capture_name.clear(); }
+    if (o.capture == "test") { o.capture_backend = "test"; o.capture.clear(); }
+    if (dump_config) {
+        printf("# effective options (config %s, state %s)\n",
+               config_path.c_str(), state_file_path().c_str());
+        printf("monitor = %s\ncapture = %s\ncapture-backend = %s\n",
+               o.monitor.c_str(), o.capture.c_str(), o.capture_backend.c_str());
+        printf("distance = %.3f\nsize = %.1f\npitch-trim = %.2f\npredict-ms = %.2f\n",
+               o.distance, o.size, o.pitch_trim, o.predict_ms);
+        printf("smooth-pos = %.2f\nsmooth-ori = %.2f\nwindow = %s\nws-port = %d\n",
+               o.smooth_pos, o.smooth_ori, o.window ? "true" : "false", o.ws_port);
+        return 0;
+    }
+    // Local aliases: the render loop mutates distance/size at runtime.
+    std::string monitor_name = o.monitor, capture_name = o.capture;
+    std::string capture_backend = o.capture_backend;
+    float distance = o.distance, diag_in = o.size, pitch_trim = o.pitch_trim;
+    float predict_ms = o.predict_ms, smooth_pos = o.smooth_pos, smooth_ori = o.smooth_ori;
+    bool force_window = o.window;
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 
@@ -690,6 +713,9 @@ int main(int argc, char** argv) {
         }
     }
 
+    app_state.distance = distance;
+    app_state.size = diag_in;
+    save_state(app_state);
     printf("shutting down…\n");
     g_gestures.stop();
     xr_device_provider_stop(g_provider);
