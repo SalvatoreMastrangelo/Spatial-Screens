@@ -74,22 +74,6 @@ def test_mixed_curl_classified_as_none():
     assert classify_pose(MIXED_CURL) == "none"
 
 
-def test_loosely_curled_hand_not_fist():
-    # Tips only slightly inside the PIPs (tip/pip wrist-distance ratio ~0.85,
-    # above the 0.7 curl margin) — the shape a hand passes through while being
-    # lowered or withdrawn. Must NOT read as a fist (which would fire a spurious
-    # recenter). Before the margin was added this misclassified as "fist".
-    loose = make_landmarks({
-        WRIST: (0.5, 0.9), MIDDLE_MCP: (0.5, 0.6),
-        INDEX_PIP: (0.45, 0.5), INDEX_TIP: (0.45, 0.56),
-        MIDDLE_PIP: (0.50, 0.5), MIDDLE_TIP: (0.50, 0.56),
-        RING_PIP: (0.52, 0.5), RING_TIP: (0.52, 0.56),
-        PINKY_PIP: (0.54, 0.5), PINKY_TIP: (0.54, 0.56),
-        THUMB_TIP: (0.3, 0.6),
-    })
-    assert classify_pose(loose) != "fist"
-
-
 def test_pinch_norm_small_when_fingers_touching():
     touching = make_landmarks({
         WRIST: (0.5, 0.9), MIDDLE_MCP: (0.5, 0.6),

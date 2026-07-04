@@ -933,7 +933,7 @@ int main(int argc, char** argv) {
                 mat_mul(proj, leye, panel_mvp);
                 const float lm_col[4] = { 0.40f, 0.90f, 1.00f, 1.f }; // soft cyan
                 const float tip[4]    = { 1.00f, 0.85f, 0.10f, 1.f }; // yellow (thumb/index tip)
-                const float lm_r = 0.006f * DOT_Z;   // ~0.65 degrees apparent size (thin)
+                const float lm_r = 0.0033f * DOT_Z;  // ~0.35 degrees apparent size (very thin)
                 // Unarmed: the whole hand is drawn mildly transparent; arming
                 // (open palm) makes it opaque. Fingertips go green only when the
                 // pinch is actually actionable (armed && pinching).
