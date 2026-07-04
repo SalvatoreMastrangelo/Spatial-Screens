@@ -527,8 +527,27 @@ int main(int argc, char** argv) {
         if (!g_running) break;
 
         // ---- gestures
+        // Fist-hold takes priority and is mutually exclusive with pinch-drag:
+        // the two pose classifiers run independently in the Python sidecar off
+        // the same landmarks, so a single frame could in principle satisfy both.
+        // When a fist is held, this frame is treated as "not pinching" (rather
+        // than skipping the else via an added && condition) so that pinch state
+        // resets cleanly — if pinch-drag resumes later, its first frame back
+        // only seeds pinch_prev_x/y instead of computing a delta against stale
+        // pre-fist coordinates.
         GestureEvent gev = g_gestures.poll();
-        if (gev.pinching) {
+        if (gev.pose == "fist") {
+            if (fist_start_s < 0) { fist_start_s = now_s(); fist_triggered = false; }
+            else if (!fist_triggered && now_s() - fist_start_s > 0.5) {
+                ori_offset = yaw_twist(head_q);
+                place_screen();
+                printf("gesture recenter (fist-hold)\n");
+                fist_triggered = true;
+            }
+            was_pinching = false;
+        } else if (gev.pinching) {
+            fist_start_s = -1;
+            fist_triggered = false;
             if (was_pinching) {
                 float dx = gev.pinch_x - pinch_prev_x; // image space: +x right
                 float dy = gev.pinch_y - pinch_prev_y; // image space: +y down
@@ -540,20 +559,9 @@ int main(int argc, char** argv) {
             pinch_prev_y = gev.pinch_y;
             was_pinching = true;
         } else {
-            was_pinching = false;
-        }
-
-        if (gev.pose == "fist") {
-            if (fist_start_s < 0) { fist_start_s = now_s(); fist_triggered = false; }
-            else if (!fist_triggered && now_s() - fist_start_s > 0.5) {
-                ori_offset = yaw_twist(head_q);
-                place_screen();
-                printf("gesture recenter (fist-hold)\n");
-                fist_triggered = true;
-            }
-        } else {
             fist_start_s = -1;
             fist_triggered = false;
+            was_pinching = false;
         }
 
         // ---- pose (predicted, then smoothed)
