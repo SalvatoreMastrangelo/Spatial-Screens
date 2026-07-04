@@ -11,7 +11,7 @@ Toolkit for the VITURE Luma Ultra XR glasses, Linux x86_64 only. Two independent
 - `bridge/` — C++17 daemon that streams SDK data (6DoF pose, raw IMU, temp, device events) as JSON over WebSocket at `ws://localhost:8765`; protocol documented in the header comment of `bridge/main.cpp`
 - `sdk/` — vendored closed-source VITURE SDK v2.0.0 (C headers + prebuilt x86_64 `.so`s). © VITURE Inc. — never modify these files, and flag any plan to publish this repo (redistribution is a licensing concern)
 - `reference/` — gitignored third-party prior-art clones. Read-only reference, not this project's code
-- `spatial-screens/` — phase-2 native app (C++17 + Vulkan): one world-anchored virtual screen on the glasses, direct-display by default, portal/XShm capture chain, gesture sidecar (`gestures/`, Python/MediaPipe), config in `~/.config/spatial-screens.conf`, WS telemetry on 8765. Build deps beyond the SDK: `libvulkan-dev`, `libpipewire-0.3-dev`, dbus-1 dev headers. Like the bridge: launch via `./run.sh`, never with viture-bridge running (single-client SDK). On GNOME/X11, `run.sh` also forces the desktop to 100% scale for the session and restores it on exit (skip with `SPATIAL_SCREENS_KEEP_SCALE=1`)
+- `spatial-screens/` — phase-2 native app (C++17 + Vulkan): one world-anchored virtual screen on the glasses, direct-display by default, portal/XShm capture chain, gesture sidecar (`gestures/`, Python/MediaPipe), config in `~/.config/spatial-screens.conf`, WS telemetry on 8765. Build deps beyond the SDK: `libvulkan-dev`, `libpipewire-0.3-dev`, dbus-1 dev headers. Like the bridge: launch via `./run.sh`, never with viture-bridge running (single-client SDK)
 
 ## Commands
 

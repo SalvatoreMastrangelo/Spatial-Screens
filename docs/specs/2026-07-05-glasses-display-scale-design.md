@@ -2,6 +2,13 @@
 
 2026-07-05
 
+> **Superseded the same day:** the user decided 100% should be permanent, not
+> per-session. `org.gnome.desktop.interface scaling-factor` is now `uint32 1`
+> in dconf (explicit value — GNOME auto-HiDPI no longer applies; persists
+> across reboots), and the run.sh session switch below was reverted. Kept for
+> the analysis of where the 200% came from. Revert to auto with:
+> `gsettings reset org.gnome.desktop.interface scaling-factor`
+
 ## Problem
 
 The laptop panel (eDP-1, 2560x1600 @ ~200 DPI) triggers GNOME's auto-HiDPI on
