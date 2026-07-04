@@ -9,7 +9,8 @@ LDFLAGS := -L$(SDK_LIB) -lglasses $(VK_LIBS) -lpthread \
 	-Wl,--allow-shlib-undefined
 
 SHADER_HDRS := shaders/quad.vert.spv.h shaders/quad.frag.spv.h
-OBJS := src/main.o src/vk_renderer.o src/vk_surface.o src/gesture_client.o
+OBJS := src/main.o src/vk_renderer.o src/vk_surface.o src/gesture_client.o \
+        src/capture.o src/capture_xshm.o
 
 spatial-screens: $(OBJS)
 	$(CXX) $(OBJS) -o $@ $(LDFLAGS)
@@ -32,9 +33,17 @@ shaders/%.frag.spv.h: shaders/%.frag
 vk-test: src/vk_test.o src/vk_renderer.o src/vk_surface.o
 	$(CXX) $^ -o $@ $(VK_LIBS)
 
+CAPTURE_OBJS := src/capture.o src/capture_xshm.o
+
+# Capture objects don't touch Vulkan or the shaders — lighter prereqs.
+src/capture.o src/capture_xshm.o src/capture_test.o: src/capture.h src/vk_surface.h
+
+capture-test: src/capture_test.o $(CAPTURE_OBJS) src/vk_surface.o
+	$(CXX) $^ -o $@ $(VK_LIBS)
+
 run: spatial-screens
 	./run.sh
 clean:
-	rm -f spatial-screens vk-test src/*.o
+	rm -f spatial-screens vk-test capture-test src/*.o
 
 .PHONY: run clean
