@@ -6,5 +6,9 @@ bridge/viture-bridge
 .DS_Store
 spatial-screens/spatial-screens
 spatial-screens/vk-test
+spatial-screens/capture-test
 .worktrees/
+.claude/worktrees/
 spatial-screens/gestures/models/
+spatial-screens/gestures/__pycache__/
+__pycache__/

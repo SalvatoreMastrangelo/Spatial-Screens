@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -52,17 +53,19 @@ bool parse_float(const std::string& key, const std::string& v, float& out) {
 
 bool parse_bool(const std::string& v) { return v == "true" || v == "1" || v == "yes"; }
 
-// Shared line-format parser for config and state files.
+// Shared line-format parser for config and state files. std::getline grows
+// the line buffer as needed, so an over-long value (e.g. a restore-token)
+// is never split across lines the way a fixed fgets() buffer would split it.
 void parse_kv_file(const std::string& path, bool warn_missing,
                    bool (*apply)(void*, const std::string&, const std::string&), void* ctx) {
-    FILE* f = fopen(path.c_str(), "r");
+    std::ifstream f(path);
     if (!f) {
         if (warn_missing) fprintf(stderr, "config: cannot open %s\n", path.c_str());
         return;
     }
-    char line[512];
+    std::string line;
     int lineno = 0;
-    while (fgets(line, sizeof(line), f)) {
+    while (std::getline(f, line)) {
         lineno++;
         std::string s = trim(line);
         if (s.empty() || s[0] == '#') continue;
@@ -77,7 +80,6 @@ void parse_kv_file(const std::string& path, bool warn_missing,
             fprintf(stderr, "config: %s:%d: unknown key '%s' (skipped)\n",
                     path.c_str(), lineno, key.c_str());
     }
-    fclose(f);
 }
 
 }  // namespace

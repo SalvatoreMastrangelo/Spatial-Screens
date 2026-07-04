@@ -327,6 +327,10 @@ public:
 
         pw_init(nullptr, nullptr);
         loop_ = pw_thread_loop_new("ss-capture", nullptr);
+        if (!loop_) {
+            fprintf(stderr, "capture(portal): thread loop alloc failed\n");
+            return false;
+        }
         ctx_ = pw_context_new(pw_thread_loop_get_loop(loop_), nullptr, 0);
         if (!loop_ || !ctx_ || pw_thread_loop_start(loop_) != 0) {
             fprintf(stderr, "capture(portal): pipewire loop setup failed\n");
@@ -344,6 +348,11 @@ public:
                                 pw_properties_new(PW_KEY_MEDIA_TYPE, "Video",
                                                   PW_KEY_MEDIA_CATEGORY, "Capture",
                                                   PW_KEY_MEDIA_ROLE, "Screen", nullptr));
+        if (!stream_) {
+            pw_thread_loop_unlock(loop_);
+            fprintf(stderr, "capture(portal): stream alloc failed\n");
+            return false;
+        }
         static const pw_stream_events EVENTS = {
             PW_VERSION_STREAM_EVENTS,
             /*.destroy =*/ nullptr,
@@ -444,6 +453,10 @@ private:
             self->w_ = int(info.size.width);
             self->h_ = int(info.size.height);
             self->pitch_ = info.size.width * 4;  // real stride comes per-buffer
+            // Discard any pending frame: it was captured at the OLD size and
+            // front_ would otherwise be handed out paired with the NEW w_/h_,
+            // an over-read past the end of the (shorter) buffer.
+            self->front_ = -1;
         }
         self->have_format_ = true;
         pw_thread_loop_signal(self->loop_, false);

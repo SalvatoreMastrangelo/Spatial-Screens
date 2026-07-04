@@ -131,7 +131,11 @@ public:
   the portal backend, then degrade the same way startup would — under `auto`,
   XShm next, then test pattern; under an explicit `--capture-backend portal`,
   straight to the test pattern. Never exit mid-session for a capture problem
-  (same philosophy as the existing draw-fail tolerance).
+  (same philosophy as the existing draw-fail tolerance). The one sanctioned
+  exit category outside this degrade-not-die policy is the RSS leak watchdog
+  (§3): its graceful self-shutdown above 8 GB is intentional — it routes
+  through the normal teardown to release the display lease before an OOM
+  SIGKILL could strand it.
 
 ### 2. Config + state
 
@@ -173,10 +177,11 @@ public:
     capture rebuild, gesture-sidecar connect/disconnect, WS-triggered
     actions.
   - **New** `app` at ~2 Hz:
-    `{"type":"app","fps":118.9,"sixdof":true,"anchored":true,"distance":0.75,"size":24,"backend":"portal","direct":true}`
+    `{"type":"app","fps":118.9,"sixdof":true,"anchored":true,"distance":0.75,"size":24,"backend":"portal","direct":true,"rss":812}`
     (`fps` reuses the existing 2 s fps accounting; `sixdof` is the existing
     liveness heuristic; `backend` is the *active* capture backend after any
-    fallback).
+    fallback; `rss` is the leak watchdog's resident-set sample in megabytes —
+    see the exit-category note under §1).
 - **Client → server:** `{"type":"reset_pose"}` (the dashboard's existing
   button) maps to the full Shift+R behavior — `reset_pose_carina` + recenter
   + re-place — matching what that button already means when the bridge serves
