@@ -612,6 +612,7 @@ int main(int argc, char** argv) {
     float pinch_prev_y = 0;
     double fist_start_s = -1; // -1 = not currently holding a fist
     bool fist_triggered = false;
+    bool gestures_armed = false; // actions gated: armed by an open palm, disarmed after each gesture
 
     printf("running — hotkeys work globally with Ctrl+Alt: R recenter (Shift adds "
            "VIO reset), [ ] distance, - = size, Q quit\n"
@@ -668,7 +669,18 @@ int main(int argc, char** argv) {
         // only seeds pinch_prev_y instead of computing a delta against stale
         // pre-fist coordinates.
         GestureEvent gev = g_gestures.poll();
-        if (gev.pose == "fist") {
+
+        // Deliberate-intent gate: gesture ACTIONS (pinch-drag distance,
+        // fist-hold recenter) fire only while "armed", and arming requires a
+        // fully open hand. Each completed gesture disarms again, so a hand
+        // merely passing through the tracking camera — or a stray pinch — does
+        // nothing until you re-open your hand. The pinch-status dot shows the
+        // state: grey (no hand), amber (hand seen, not armed), blue (armed),
+        // green (armed + pinching).
+        if (!gev.present) gestures_armed = false;      // hand gone -> re-arm needed
+        if (gev.pose == "open_palm") gestures_armed = true;
+
+        if (gestures_armed && gev.pose == "fist") {
             if (fist_start_s < 0) { fist_start_s = now_s(); fist_triggered = false; }
             else if (!fist_triggered && now_s() - fist_start_s > FIST_HOLD_SECONDS) {
                 ori_offset = yaw_twist(head_q);
@@ -676,9 +688,10 @@ int main(int argc, char** argv) {
                 printf("gesture recenter (fist-hold)\n");
                 tele.log("info", "recentered");
                 fist_triggered = true;
+                gestures_armed = false;                // one gesture per open-hand arm
             }
             was_pinching = false;
-        } else if (gev.pinching) {
+        } else if (gestures_armed && gev.pinching) {
             fist_start_s = -1;
             fist_triggered = false;
             if (was_pinching) {
@@ -700,6 +713,8 @@ int main(int argc, char** argv) {
         } else {
             fist_start_s = -1;
             fist_triggered = false;
+            // A pinch-drag that just ended is one completed gesture -> disarm.
+            if (was_pinching) gestures_armed = false;
             was_pinching = false;
         }
 
@@ -878,14 +893,18 @@ int main(int argc, char** argv) {
             // feedback channels agree).
             const float status_green[4] = { 0.20f, 0.90f, 0.30f, 1.f };
 
-            // Pinch-status dot, just left of the VO tracking-status dot (which
-            // is at x-factor 0.95). Only shown while the gesture pipeline is
-            // live (a grey dot with no sidecar would falsely imply "running,
-            // no hand seen").  no hand -> grey, hand seen -> blue, pinch -> green.
+            // Pinch/arm-status dot, just left of the VO tracking-status dot (at
+            // x-factor 0.95). Only shown while the gesture pipeline is live (a
+            // grey dot with no sidecar would falsely imply "running, no hand
+            // seen"). States: grey = no hand, amber = hand seen but not armed,
+            // blue = armed (open palm seen), green = armed + pinching.
             if (g_gestures.enabled()) {
-                const float grey[4] = { 0.5f, 0.5f, 0.5f, 1.f };
-                const float hand[4] = { 0.30f, 0.55f, 1.f, 1.f };
-                const float* pcol = !gev.present ? grey : (gev.pinching ? status_green : hand);
+                const float grey[4]  = { 0.5f, 0.5f, 0.5f, 1.f };
+                const float amber[4] = { 1.f, 0.65f, 0.1f, 1.f };
+                const float blue[4]  = { 0.30f, 0.55f, 1.f, 1.f };
+                const float* pcol = !gev.present   ? grey
+                                  : !gestures_armed ? amber
+                                  : (gev.pinching ? status_green : blue);
                 float peye[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
                                    0.90f * tan_r * DOT_Z, -0.95f * tan_t * DOT_Z, -DOT_Z, 1 };
                 QuadDraw& pd = draws[ndraw++];
@@ -914,7 +933,11 @@ int main(int argc, char** argv) {
                 mat_mul(proj, leye, panel_mvp);
                 const float lm_col[4] = { 0.40f, 0.90f, 1.00f, 1.f }; // soft cyan
                 const float tip[4]    = { 1.00f, 0.85f, 0.10f, 1.f }; // yellow (thumb/index tip)
-                const float lm_r = 0.010f * DOT_Z;   // ~1 degree apparent size
+                const float lm_r = 0.006f * DOT_Z;   // ~0.65 degrees apparent size (thin)
+                // Unarmed: the whole hand is drawn mildly transparent; arming
+                // (open palm) makes it opaque. Fingertips go green only when the
+                // pinch is actually actionable (armed && pinching).
+                const float ov_alpha = gestures_armed ? 1.f : 0.45f;
                 for (int i = 0; i < 21 && ndraw < 32; i++) {
                     float nx = gev.landmarks[i][0];
                     float ny = gev.landmarks[i][1];
@@ -924,8 +947,10 @@ int main(int argc, char** argv) {
                     // (nx - 0.5f) to (0.5f - nx) here.
                     float lx =  (nx - 0.5f) * 2.f * PANEL_W;
                     float ly = -(ny - 0.5f) * 2.f * PANEL_H;
-                    const float* col = (i == 4 || i == 8)
-                                         ? (gev.pinching ? status_green : tip) : lm_col;
+                    const float* base = (i == 4 || i == 8)
+                                          ? ((gestures_armed && gev.pinching) ? status_green : tip)
+                                          : lm_col;
+                    float col[4] = { base[0], base[1], base[2], ov_alpha };
                     QuadDraw& ld = draws[ndraw++];
                     memcpy(ld.mvp, panel_mvp, sizeof(panel_mvp));
                     memcpy(ld.color, col, 4 * sizeof(float));

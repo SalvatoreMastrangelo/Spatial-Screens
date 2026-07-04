@@ -15,5 +15,10 @@ layout(location = 0) out vec4 o_color;
 void main() {
     // flags.y = 1: clip the quad to an inscribed circle (status dot).
     if (pc.flags.y > 0.5 && length(v_uv - vec2(0.5)) > 0.5) discard;
-    o_color = pc.flags.x > 0.5 ? texture(u_tex, v_uv) * pc.color : pc.color;
+    // Textured (the captured screen) is always opaque: the capture buffer's
+    // alpha channel is undefined (BGRX), so force a=1. Only solid quads (the
+    // overlay dots) use the push-constant alpha, enabling per-dot transparency.
+    o_color = pc.flags.x > 0.5
+        ? vec4((texture(u_tex, v_uv) * pc.color).rgb, 1.0)
+        : pc.color;
 }

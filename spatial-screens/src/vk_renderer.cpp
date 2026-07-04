@@ -275,6 +275,16 @@ bool vkr_init_pipeline(VkRend& r) {
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     VkPipelineColorBlendAttachmentState ba{};
     ba.colorWriteMask = 0xF;
+    // Alpha blending so overlay dots can be drawn semi-transparent (the unarmed
+    // hand). Solid and textured quads pass alpha=1 (see quad.frag), so they
+    // stay opaque; only the landmark dots vary their alpha.
+    ba.blendEnable = VK_TRUE;
+    ba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    ba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    ba.colorBlendOp = VK_BLEND_OP_ADD;
+    ba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    ba.alphaBlendOp = VK_BLEND_OP_ADD;
     VkPipelineColorBlendStateCreateInfo bl{};
     bl.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     bl.attachmentCount = 1;
