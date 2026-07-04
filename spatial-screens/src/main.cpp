@@ -12,7 +12,7 @@
 //        [ / ]  screen closer / farther      - / =  smaller / larger
 //        Q/Esc  quit
 //        Gestures (if the sidecar connects): pinch-drag vertical =
-//        distance, horizontal = size; fist held ~0.5s = recenter.
+//        distance (anchor stays fixed); fist held ~0.5s = recenter.
 //
 // NOTE: stop viture-bridge before running — the SDK supports one client.
 // Presentation: Vulkan direct display by default (RandR non-desktop=1 +
@@ -122,7 +122,6 @@ static bool g_probe_camera = false;
 static int g_probe_frames_remaining = 0;
 static GestureClient g_gestures;
 static constexpr float PINCH_DISTANCE_SENSITIVITY = 4.0f; // tune after hands-on test; higher = faster response to hand motion
-static constexpr float PINCH_SIZE_SENSITIVITY = 200.f;    // tune after hands-on test; higher = faster response to hand motion
 static constexpr double FIST_HOLD_SECONDS = 0.5;          // how long a fist must be held before it triggers recenter
 
 static void on_imu_noop(float*, double) {}
