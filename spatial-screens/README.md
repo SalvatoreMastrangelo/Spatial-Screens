@@ -82,9 +82,9 @@ Config file: `~/.config/spatial-screens.conf` (respects `$XDG_CONFIG_HOME`),
 minus `--` (e.g. `pitch-trim`, `capture-backend`, `ws-port`). It's
 user-authored — the app never writes to it. State file:
 `~/.local/state/spatial-screens/state` (respects `$XDG_STATE_HOME`),
-app-written only: live-tuned distance/size (saved on clean exit and via the
-hotkeys) and the portal restore token (saved the moment a new one is
-granted). Precedence: compiled defaults < config < state < CLI flags. Use
+app-written only: live-tuned distance/size (written once at exit — whatever
+value the hotkeys left them at, so a `kill -9` loses unsaved tuning) and the
+portal restore token (saved the moment a new one is granted). Precedence: compiled defaults < config < state < CLI flags. Use
 `--dump-config` to see the effective values after all four layers are
 applied, plus the resolved config/state file paths.
 
