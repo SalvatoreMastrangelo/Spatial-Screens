@@ -453,14 +453,14 @@ int main(int argc, char** argv) {
     float win_max_ang = 0;
     int win_n = 0;
     bool was_pinching = false;
-    float pinch_prev_x = 0, pinch_prev_y = 0;
+    float pinch_prev_y = 0;
     double fist_start_s = -1; // -1 = not currently holding a fist
     bool fist_triggered = false;
 
     printf("running — hotkeys work globally with Ctrl+Alt: R recenter (Shift adds "
            "VIO reset), [ ] distance, - = size, Q quit\n"
-           "gestures (if sidecar connected): pinch-drag vertical=distance "
-           "horizontal=size, fist-hold(0.5s)=recenter\n");
+           "gestures (if sidecar connected): pinch-drag vertical=distance, "
+           "fist-hold(0.5s)=recenter\n");
 
     while (g_running) {
         // ---- input
@@ -533,7 +533,7 @@ int main(int argc, char** argv) {
         // When a fist is held, this frame is treated as "not pinching" (rather
         // than skipping the else via an added && condition) so that pinch state
         // resets cleanly — if pinch-drag resumes later, its first frame back
-        // only seeds pinch_prev_x/y instead of computing a delta against stale
+        // only seeds pinch_prev_y instead of computing a delta against stale
         // pre-fist coordinates.
         GestureEvent gev = g_gestures.poll();
         if (gev.pose == "fist") {
@@ -549,13 +549,19 @@ int main(int argc, char** argv) {
             fist_start_s = -1;
             fist_triggered = false;
             if (was_pinching) {
-                float dx = gev.pinch_x - pinch_prev_x; // image space: +x right
                 float dy = gev.pinch_y - pinch_prev_y; // image space: +y down
+                float old_distance = distance;
                 distance = std::clamp(distance - dy * PINCH_DISTANCE_SENSITIVITY, 0.5f, 10.f);
-                diag_in  = std::clamp(diag_in + dx * PINCH_SIZE_SENSITIVITY, 40.f, 400.f);
-                place_screen();
+                // Slide the anchor along its existing fixed forward axis rather
+                // than calling place_screen() (which would re-derive anchor_q/p
+                // from the live head pose and re-center every frame). anchor_q
+                // stays exactly as set by the last real placement.
+                Vec3 fwd = qrot(anchor_q, { 0, 0, -1 });
+                float ddist = distance - old_distance;
+                anchor_p.x += fwd.x * ddist;
+                anchor_p.y += fwd.y * ddist;
+                anchor_p.z += fwd.z * ddist;
             }
-            pinch_prev_x = gev.pinch_x;
             pinch_prev_y = gev.pinch_y;
             was_pinching = true;
         } else {

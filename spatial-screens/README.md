@@ -41,11 +41,12 @@ additionally work whenever the window has focus.
 
 Gestures (if `gestures/hand_tracker.py`'s dependencies are installed —
 `pip install -r gestures/requirements.txt`): pinch (thumb+index touching)
-and drag vertically for distance, horizontally for size; hold a fist for
-about half a second to recenter. Gestures are additive — the hotkeys above
-always work as a fallback. See
-`../docs/specs/2026-07-03-hand-gesture-control-design.md` for how this
-works.
+and drag vertically for distance (the screen's anchored position/orientation
+stay fixed — only distance along that fixed axis changes); hold a fist for
+about half a second to recenter. Size is hotkey-only (`-`/`=`). Gestures are
+additive — the hotkeys above always work as a fallback. See
+`../docs/specs/2026-07-03-hand-gesture-control-design.md` for the original
+design (pinch-drag has since been narrowed to distance-only).
 
 ## Scope of this spike (per docs/plan/phase2-spatial-screens.md)
 
