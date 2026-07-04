@@ -53,3 +53,11 @@ Researched plan: [`phase2-spatial-screens.md`](phase2-spatial-screens.md). Summa
 2. M0–M6 milestones as laid out in the phase-2 doc, starting with a pose-driven
    fullscreen quad rendering a static image, then PipeWire capture, then
    presets/layouts.
+
+### Status
+
+- M0–M2: done (bridge = 6DoF spike; direct-mode Vulkan renderer glasses-validated 2026-07-04).
+- M3: done — portal/XShm capture chain, config + state files, WS telemetry to the
+  phase-1 dashboard (spec: `docs/specs/2026-07-04-m3-remainder-design.md`).
+  Hand-gesture control (pinch-drag, fist-hold) also merged.
+- Next: M4 preset & layout engine; M5 outreach.
