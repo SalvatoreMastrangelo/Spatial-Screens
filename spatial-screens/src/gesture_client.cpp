@@ -165,10 +165,33 @@ void GestureClient::maybe_send_frame(const uint8_t* gray8, int width, int height
     *p = 0; /* format: GRAY8, per Task 1 */ p += 1;
     memcpy(p, gray8, data_len);
 
-    ssize_t sent = send(conn_fd_, msg.data(), msg.size(), MSG_NOSIGNAL);
-    if (sent < 0) {
+    // A 640x480 GRAY8 frame (~307KB) exceeds the default Unix-domain-socket
+    // send buffer (~208KB usable on this system) — confirmed on hardware:
+    // send() reliably accepts only a partial write (~219KB) on the very
+    // first frame. A single non-retrying send() call (as this used to be)
+    // silently drops the unsent tail, which desyncs the sidecar's
+    // length-prefixed frame parsing from the very next frame onward — it
+    // ends up trying to read a bogus multi-gigabyte "length" reconstructed
+    // from misaligned pixel bytes and hangs forever. Loop until the whole
+    // message is sent; on EAGAIN (buffer momentarily full), wait briefly
+    // for room via poll() rather than treating it as fatal.
+    size_t sent_total = 0;
+    while (sent_total < msg.size()) {
+        ssize_t sent = send(conn_fd_, msg.data() + sent_total, msg.size() - sent_total, MSG_NOSIGNAL);
+        if (sent > 0) {
+            sent_total += size_t(sent);
+            continue;
+        }
+        if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            pollfd pfd{ conn_fd_, POLLOUT, 0 };
+            if (::poll(&pfd, 1, 200 /*ms*/) > 0) continue;
+            fprintf(stderr, "gestures: send() timed out waiting for sidecar to drain — disabling gesture control\n");
+            enabled_ = false;
+            return;
+        }
         fprintf(stderr, "gestures: send() failed (%s) — disabling gesture control\n", strerror(errno));
         enabled_ = false;
+        return;
     }
 }
 
