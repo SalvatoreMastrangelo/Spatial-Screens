@@ -87,6 +87,7 @@ GestureEvent parse_event(const std::string& line) {
 
 bool GestureClient::start(const std::string& socket_path, const std::string& script_path,
                            double connect_timeout_s) {
+    std::lock_guard<std::mutex> lock(mutex_);
     unlink(socket_path.c_str());
 
     listen_fd_ = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -127,13 +128,13 @@ bool GestureClient::start(const std::string& socket_path, const std::string& scr
     if (pres <= 0) {
         fprintf(stderr, "gestures: sidecar did not connect within %.1fs — gesture control disabled\n",
                 connect_timeout_s);
-        stop();
+        stop_locked();
         return false;
     }
     conn_fd_ = accept(listen_fd_, nullptr, nullptr);
     if (conn_fd_ < 0) {
         fprintf(stderr, "gestures: accept() failed: %s\n", strerror(errno));
-        stop();
+        stop_locked();
         return false;
     }
     fcntl(conn_fd_, F_SETFL, O_NONBLOCK);
@@ -144,6 +145,7 @@ bool GestureClient::start(const std::string& socket_path, const std::string& scr
 }
 
 void GestureClient::maybe_send_frame(const uint8_t* gray8, int width, int height, double timestamp) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!enabled_) return;
     double t = now_s();
     if (t - last_send_s_ < 1.0 / GESTURE_INFER_HZ) return;
@@ -171,6 +173,7 @@ void GestureClient::maybe_send_frame(const uint8_t* gray8, int width, int height
 }
 
 GestureEvent GestureClient::poll() {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!enabled_) return last_event_;
 
     char buf[8192];
@@ -201,6 +204,14 @@ GestureEvent GestureClient::poll() {
 }
 
 void GestureClient::stop() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stop_locked();
+}
+
+// Actual teardown logic. Callers must already hold mutex_ — factored out
+// so start()'s internal failure-cleanup paths can reuse it without
+// recursively locking (std::mutex is not recursive).
+void GestureClient::stop_locked() {
     if (child_pid_ > 0) {
         kill(child_pid_, SIGTERM);
         int status;

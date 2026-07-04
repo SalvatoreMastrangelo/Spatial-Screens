@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <sys/types.h>
 
@@ -40,9 +41,22 @@ public:
     // start() failed or was never called.
     void stop();
 
-    bool enabled() const { return enabled_; }
+    bool enabled() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return enabled_;
+    }
 
 private:
+    // Actual teardown logic, factored out of stop() so start()'s internal
+    // failure-cleanup paths can call it while already holding mutex_
+    // (std::mutex isn't recursive, so start() can't call the public,
+    // lock-taking stop() without deadlocking itself).
+    void stop_locked();
+
+    // Guards all fields below. maybe_send_frame() may be called from an
+    // SDK-internal capture thread (on_camera_carina) while poll()/stop()
+    // run on the main render-loop thread.
+    mutable std::mutex mutex_;
     bool enabled_ = false;
     int listen_fd_ = -1;
     int conn_fd_ = -1;
