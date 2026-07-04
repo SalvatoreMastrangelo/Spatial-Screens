@@ -11,6 +11,8 @@
 //        Shift+R also reset the VIO origin
 //        [ / ]  screen closer / farther      - / =  smaller / larger
 //        Q/Esc  quit
+//        Gestures (if the sidecar connects): pinch-drag vertical =
+//        distance, horizontal = size; fist held ~0.5s = recenter.
 //
 // NOTE: stop viture-bridge before running — the SDK supports one client.
 // Presentation: Vulkan direct display by default (RandR non-desktop=1 +
@@ -452,9 +454,13 @@ int main(int argc, char** argv) {
     int win_n = 0;
     bool was_pinching = false;
     float pinch_prev_x = 0, pinch_prev_y = 0;
+    double fist_start_s = -1; // -1 = not currently holding a fist
+    bool fist_triggered = false;
 
     printf("running — hotkeys work globally with Ctrl+Alt: R recenter (Shift adds "
-           "VIO reset), [ ] distance, - = size, Q quit\n");
+           "VIO reset), [ ] distance, - = size, Q quit\n"
+           "gestures (if sidecar connected): pinch-drag vertical=distance "
+           "horizontal=size, fist-hold(0.5s)=recenter\n");
 
     while (g_running) {
         // ---- input
@@ -535,6 +541,19 @@ int main(int argc, char** argv) {
             was_pinching = true;
         } else {
             was_pinching = false;
+        }
+
+        if (gev.pose == "fist") {
+            if (fist_start_s < 0) { fist_start_s = now_s(); fist_triggered = false; }
+            else if (!fist_triggered && now_s() - fist_start_s > 0.5) {
+                ori_offset = yaw_twist(head_q);
+                place_screen();
+                printf("gesture recenter (fist-hold)\n");
+                fist_triggered = true;
+            }
+        } else {
+            fist_start_s = -1;
+            fist_triggered = false;
         }
 
         // ---- pose (predicted, then smoothed)
