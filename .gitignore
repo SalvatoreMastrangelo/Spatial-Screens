@@ -12,3 +12,4 @@ spatial-screens/capture-test
 spatial-screens/gestures/models/
 spatial-screens/gestures/__pycache__/
 __pycache__/
+spatial-screens/gesture-parse-test
