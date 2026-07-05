@@ -63,6 +63,10 @@ bool vkr_init_pipeline(VkRend& r);
 bool vkr_init_texture(VkRend& r, uint32_t w, uint32_t h, uint32_t pitch_bytes);
 void vkr_destroy_texture(VkRend& r);
 void vkr_upload(VkRend& r, const void* pixels, size_t bytes);
+// Wait for all in-flight frames before mutating the staging buffer — a
+// prior frame's buffer->image copy may still be reading it (visible as a
+// flickering cursor overlay otherwise).
+void vkr_wait_uploads(VkRend& r);
 bool vkr_draw(VkRend& r, const QuadDraw* draws, int n);
 void vkr_destroy(VkRend& r);
 
