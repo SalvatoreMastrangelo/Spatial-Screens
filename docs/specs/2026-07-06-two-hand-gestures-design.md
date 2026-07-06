@@ -229,6 +229,27 @@ Screen distance is untouched during a grab (the one-handed drag owns depth).
   (2026-07-06): detect both hands in ONE camera image so the left/right split
   comes from one consistent x-axis (no cross-camera parallax). See the branch
   doc `docs/branches/feat-two-hand-gestures.md` for that pivot and its evidence.
+- **Head-motion compensation in hand reading** (requested 2026-07-06, hardware
+  pass). The tracking camera is head-mounted, so when the user moves their head
+  a *stationary* hand sweeps across the image — apparent hand motion that is
+  really head motion. This adds jitter to gestures and, on the single-frame
+  spatial split, can flip a near-center hand between the left/right sides just
+  from a head turn. We already stream the 6DoF head pose (same SDK callback,
+  `pose ok` in the HUD), so we can subtract the head's angular delta between
+  frames from the landmark positions before classifying — stabilising hand
+  coordinates in a head-independent frame. Cheap (no extra camera work, reuses
+  existing pose), and it directly improves grab steadiness and the
+  center-crossing behavior below. Needs the camera's mounting offset/FOV to map
+  head rotation → image pixels (approximate constants, tunable on hardware).
+- **Single-frame center-crossing / split hysteresis** — observed on hardware
+  (2026-07-06): with the single-frame `num_hands=2` spatial split at image
+  x=0.5, a *lone* hand moved across the center jumps from the left side/dot to
+  the right (it is now physically on the other half). Harmless for the two-hand
+  grab (hands stay on their own sides) and for single-hand gestures (symmetric —
+  either hand fires), but visually surprising. Optional refinement: add a small
+  dead-zone / hysteresis band around x=0.5 so an already-tracked hand keeps its
+  side until it clearly crosses, rather than flipping at the exact midpoint.
+  Pairs naturally with head-motion compensation above. Left out of v1 by choice.
 - **Two-hand rotation** — angle between the two pinch points → screen yaw/roll,
   a natural add on top of the existing grab snapshot.
 - **Downscaled grayscale inference** — *investigated on hardware 2026-07-06,

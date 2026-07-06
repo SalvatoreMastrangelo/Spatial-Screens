@@ -71,30 +71,26 @@ sidecar) and the hand-overlay work.
 - [x] Implementation — **all 10 tasks + follow-ups done, every unit test green,
       clean build.** Executed subagent-driven (per-task independent review;
       opus review on the state machine). SDD ledger: `.superpowers/sdd/progress.md`.
-- [ ] **Hardware verification pass** (needs the glasses — single SDK client, no
-      viture-bridge / other spatial-screens session running; launch `./run.sh`):
-    - [ ] **Confirm `MIRROR_HANDEDNESS`** (`gestures/classify.py`): does the left
-          hand light up the LEFT status dot / left overlay panel? If swapped,
-          flip the constant.
-    - [x] **Inference throughput** — RESOLVED autonomously 2026-07-06. Findings:
-          downscaling the camera stream does NOT help (MediaPipe resizes to fixed
-          internal sizes; inference flat 24–27 ms from 640×480→160×120). Fix was
-          (a) run the two landmarker inferences concurrently (1.74×, ~52→30 ms;
-          commit `15c7917`) and (b) raise `GESTURE_INFER_HZ` 15→30 to un-alias
-          the 25 Hz camera's 40 ms grid (commit `65673a5`). Live rate went
-          **12.5 → stable 25 Hz**, no backpressure. Hand-free measured; confirm
-          it holds with two hands actively tracked (threaded cycle ~40 ms is near
-          the 40 ms budget — may dip gracefully, drain-loop absorbs). Single-frame
-          `num_hands=2` fallback remains available but is no longer needed.
-    - [ ] **Tune grab feel**: `GRAB_REPOSITION_GAIN`, `GRAB_DIAG_MIN/MAX` in
-          `main.cpp`.
-    - [ ] **Check resize parallax**: if the two-hand resize drifts, source both
-          grab pinch points from the left frame during a grab.
-    - [ ] Sanity-check the HUD: three bottom dots (left-hand / VO-center /
-          right-hand), left/right overlay panels, per-hand grey/amber/blue/green.
+- [x] **Hardware verification pass — PASSED (2026-07-06, single-frame build).**
+      Direct mode on the glasses, whole session stable (fps ~115, 6DoF LIVE, no
+      SIGSEGV). User feedback:
+    - [x] **`MIRROR_HANDEDNESS` confirmed** (`=False`): a lone hand lights up the
+          correct side and only ONE side — no more doubling.
+    - [x] **Both hands cleanly separated**, each on its correct side.
+    - [x] **Less laggy** than the dual-camera build (one inference, not two).
+    - [x] **All functionalities work** (arm, recenter, pinch-distance, two-hand
+          grab). Two-hand grab is usable but has a learning curve — "a bit hard,
+          need to get used to it." No numeric tuning requested; grab-feel
+          constants (`GRAB_REPOSITION_GAIN`, `GRAB_DIAG_MIN/MAX`) left at
+          defaults, revisit only if asked.
+    - [~] **Known quirk (accepted for v1):** a lone hand moved across image
+          center jumps to the other side/dot (spatial split at x=0.5). Harmless
+          for two-hand grab (hands stay on their sides) and symmetric single-hand
+          gestures. Logged as a future idea (split hysteresis + head-motion
+          compensation) in the design doc, not fixed here.
 - [ ] Final whole-branch review (recommended before merge — can run
       `/code-review` or ultra; per-task reviews already passed)
-- [ ] Merge to master
+- [ ] Merge to main (master was deleted 2026-07-06; main is the sole mainline)
 
 ## Implementation map (commits on this branch)
 
