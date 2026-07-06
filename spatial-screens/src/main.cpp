@@ -54,6 +54,7 @@
 #include "capture_portal.h"
 #include "config.h"
 #include "telemetry.h"
+#include "sbs_mode.h"
 
 // -------------------------------------------------------- cursor overlay ----
 // Neither capture path delivers the pointer (mutter on X11 ignores the
@@ -133,6 +134,7 @@ static void composite_cursor(Display* dpy, uint8_t* dst, int w, int h,
 
 static XRDeviceProviderHandle g_provider = nullptr;
 static int g_pid = 0;
+static int g_sbs_orig = -1;
 static std::atomic<bool> g_running{true};
 static bool g_probe_camera = false;
 static int g_probe_frames_remaining = 0;
@@ -225,6 +227,18 @@ static bool sdk_init() {
     }
     printf("SDK started (pid 0x%04x, Carina 6DoF)\n", pid);
     return true;
+}
+
+// Every exit path after sdk_init() must restore the panel mode BEFORE the
+// provider goes away, then tear the SDK down. Safe to call once only.
+static void sdk_shutdown() {
+    if (!g_provider) return;
+    sbs_exit(g_provider, g_sbs_orig);
+    g_sbs_orig = -1;
+    xr_device_provider_stop(g_provider);
+    xr_device_provider_shutdown(g_provider);
+    xr_device_provider_destroy(g_provider);
+    g_provider = nullptr;
 }
 
 static std::string executable_dir() {
@@ -362,9 +376,27 @@ int main(int argc, char** argv) {
     }
     printf("glasses: %s (%dx%d)\n", glasses.name.c_str(), glasses.w, glasses.h);
 
+    // -- SDK first: the panel must be in its final mode before Vulkan
+    // enumerates display modes (direct mode picks from what's exposed).
+    if (!sdk_init()) return 1;
+
+    // -- SBS 3D: switch the panel and wait for RandR to see 3840-wide.
+    // Window mode skips the panel switch entirely (debug renders SBS halves
+    // into a desktop window). Failure falls back to mono — never fatal.
+    if (o.stereo && !force_window) {
+        g_sbs_orig = sbs_enter(g_provider, dpy, glasses.name);
+        if (g_sbs_orig >= 0) {
+            // The mode switch reflowed the desktop — re-resolve the glasses
+            // rect (position AND size changed to 3840x1200).
+            outputs = list_outputs(dpy);
+            for (auto& out2 : outputs)
+                if (out2.name == glasses.name) { glasses = out2; break; }
+        }
+    }
+
     // -- Vulkan: direct display (default) or EWMH-fullscreen window fallback
     VkRend vk{};
-    if (!vkr_create_instance(vk, !force_window)) return 1;
+    if (!vkr_create_instance(vk, !force_window)) { sdk_shutdown(); return 1; }
     SurfaceOut sout{};
     bool direct_ok = !force_window && vk.has_display_ext &&
                      direct_acquire(dpy, vk.instance, glasses.id, sout);
@@ -374,8 +406,10 @@ int main(int argc, char** argv) {
         // have shifted meanwhile — re-resolve the glasses rect first.
         outputs = list_outputs(dpy);
         for (auto& o : outputs) if (o.name == glasses.name) { glasses = o; break; }
-        if (!window_create(dpy, vk.instance, glasses.x, glasses.y, glasses.w, glasses.h, sout))
+        if (!window_create(dpy, vk.instance, glasses.x, glasses.y, glasses.w, glasses.h, sout)) {
+            sdk_shutdown();
             return 1;
+        }
     }
     vk.phys = sout.phys;
     vk.surface = sout.surface;
@@ -384,6 +418,7 @@ int main(int argc, char** argv) {
         if (sout.direct) direct_release(vk.instance);
         vkr_destroy(vk);
         if (sout.direct) direct_restore(dpy);
+        sdk_shutdown();
         return 1;
     }
     int rr_event_base = 0, rr_error_base = 0;
@@ -474,20 +509,12 @@ int main(int argc, char** argv) {
         if (sout.direct) direct_release(vk.instance);
         vkr_destroy(vk);
         if (sout.direct) direct_restore(dpy);
+        sdk_shutdown();
         return 1;
     }
     if (first.data) {
         vkr_upload(vk, first.data, size_t(first.pitch) * first.h);
         cap_aspect = float(first.w) / float(first.h);
-    }
-
-    // -- SDK last (it takes a second; window is already up)
-    if (!sdk_init()) {
-        vkr_destroy_device(vk);
-        if (sout.direct) direct_release(vk.instance);
-        vkr_destroy(vk);
-        if (sout.direct) direct_restore(dpy);
-        return 1;
     }
 
     char market[64] = {0};
@@ -965,15 +992,13 @@ int main(int argc, char** argv) {
     printf("shutting down…\n");
     g_gestures.stop();
     tele.stop();
-    xr_device_provider_stop(g_provider);
-    xr_device_provider_shutdown(g_provider);
-    xr_device_provider_destroy(g_provider);
     if (cap) cap->stop();
     vkr_destroy_device(vk);                        // swapchain/surface/device first
     if (sout.direct) direct_release(vk.instance);  // drop the lease (instance teardown never does)
     vkr_destroy(vk);
     if (sout.direct) direct_restore(dpy);          // now the server can re-enable the output
     else if (sout.window) XDestroyWindow(dpy, sout.window);
+    sdk_shutdown();                                // panel back to 2D, then SDK down
     XCloseDisplay(dpy);
     return 0;
 }
