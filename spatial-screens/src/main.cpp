@@ -276,11 +276,12 @@ int main(int argc, char** argv) {
     load_state(app_state);
     if (app_state.distance > 0) o.distance = app_state.distance;
     if (app_state.size > 0) o.size = app_state.size;
-    bool fusion = false;
+    bool fusion = true;
     for (int i = 1; i < argc; i++) {
         const char* a = argv[i];
         bool ok = false;
         if (!strcmp(a, "--fusion")) { fusion = true; continue; }
+        if (!strcmp(a, "--no-fusion")) { fusion = false; continue; }
         if (!strncmp(a, "--", 2)) {
             a += 2;
             if (!strcmp(a, "config")) { i++; ok = true; }  // handled in the pre-pass
@@ -294,7 +295,9 @@ int main(int argc, char** argv) {
                    "[--capture-backend auto|portal|xshm|test] [--capture-hz N] [--distance M] "
                    "[--size IN] [--pitch-trim DEG] [--predict-ms MS] [--smooth-pos 0..1] "
                    "[--smooth-ori 0..1] [--ws-port N] [--window] [--config PATH] "
-                   "[--dump-config] [--probe-camera]\n"
+                   "[--dump-config] [--probe-camera] [--no-fusion] [--fusion]\n"
+                   "  --no-fusion   disable stereo depth fusion (fusion is ON by default)\n"
+                   "  --fusion      force-enable stereo depth fusion (default)\n"
                    "config: %s   state: %s\n",
                    argv[0], config_default_path().c_str(), state_file_path().c_str());
             return 0;
