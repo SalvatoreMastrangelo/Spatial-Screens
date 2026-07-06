@@ -840,33 +840,36 @@ int main(int argc, char** argv) {
                                             gev.right.pinch_x, gev.right.pinch_y,
                                             distance, GRAB_REPOSITION_GAIN,
                                             GRAB_DIAG_MIN, GRAB_DIAG_MAX);
-                // Reposition is HEAD-anchored: rebuild the anchor from the CURRENT
-                // head pose + the stored head-local offset, nudged by the pinch-
-                // midpoint delta in the head's right/up plane. So the grabbed screen
-                // follows head rotation AND translation while hands fine-tune it.
-                // (gr.anchor is ignored; only gr.diag — the spread — drives size.)
-                Quat head_rc = qmul(qconj(ori_offset), head_q);
-                Vec3 hp = qrot(qconj(ori_offset), head_p);
-                float d0 = std::sqrt(grab_rel0.x * grab_rel0.x +
-                                     grab_rel0.y * grab_rel0.y + grab_rel0.z * grab_rel0.z);
-                float mid_x = 0.5f * (gev.left.pinch_x + gev.right.pinch_x);
-                float mid_y = 0.5f * (gev.left.pinch_y + gev.right.pinch_y);
-                float dmx = mid_x - grab.mid0x, dmy = mid_y - grab.mid0y;
-                Vec3 rel = { grab_rel0.x + dmx * GRAB_REPOSITION_GAIN * d0,
-                             grab_rel0.y - dmy * GRAB_REPOSITION_GAIN * d0,
-                             grab_rel0.z };
-                Vec3 rw = qrot(head_rc, rel);
-                Vec3 anchor = { hp.x + rw.x, hp.y + rw.y, hp.z + rw.z };
                 if (active_screen >= 0) {
-                    // Reposition + resize the ONE active screen (override world pose).
-                    Vec3 d = { anchor.x - rack_p.x, anchor.y - rack_p.y,
-                               anchor.z - rack_p.z };
+                    // Reposition + resize the ONE active screen. HEAD-ANCHORED:
+                    // rebuild the anchor from the CURRENT head pose + the stored
+                    // head-local offset, nudged by the pinch-midpoint delta in the
+                    // head's right/up plane, so the screen follows head motion
+                    // (look/lean and it comes with you) while hands fine-tune it.
+                    // gr.anchor is unused here; gr.diag (spread) drives size.
+                    // Orientation is held fixed — the screen follows head POSITION,
+                    // not facing. Head-anchoring is gated to the active-screen branch
+                    // because the rack origin sits ON the head (d0->0 there).
+                    Quat head_rc = qmul(qconj(ori_offset), head_q);
+                    Vec3 hp = qrot(qconj(ori_offset), head_p);
+                    float d0 = std::sqrt(grab_rel0.x * grab_rel0.x +
+                                         grab_rel0.y * grab_rel0.y + grab_rel0.z * grab_rel0.z);
+                    float mid_x = 0.5f * (gev.left.pinch_x + gev.right.pinch_x);
+                    float mid_y = 0.5f * (gev.left.pinch_y + gev.right.pinch_y);
+                    float dmx = mid_x - grab.mid0x, dmy = mid_y - grab.mid0y;
+                    Vec3 rel = { grab_rel0.x + dmx * GRAB_REPOSITION_GAIN * d0,
+                                 grab_rel0.y - dmy * GRAB_REPOSITION_GAIN * d0,
+                                 grab_rel0.z };
+                    Vec3 rw = qrot(head_rc, rel);
+                    Vec3 anchor = { hp.x + rw.x, hp.y + rw.y, hp.z + rw.z };
+                    Vec3 d = { anchor.x - rack_p.x, anchor.y - rack_p.y, anchor.z - rack_p.z };
                     scene[active_screen].cfg.pose_pos = qrot(qconj(rack_q), d);
                     scene[active_screen].cfg.has_pose_override = true;  // already true; explicit
                     scene[active_screen].cfg.size = gr.diag;
                 } else {
-                    // Reposition: move the rack origin in its own right/up plane.
-                    rack_p = { anchor.x, anchor.y, anchor.z };
+                    // Rack-global (nothing selected): hand-driven reposition in the
+                    // rack's right/up plane (world-anchored) — the pre-tweak behavior.
+                    rack_p = { gr.anchor.x, gr.anchor.y, gr.anchor.z };
                     if (multi) {
                         float ratio = gr.diag / std::max(1e-3f, grab.size0);
                         rack_size_scale = std::clamp(grab_scale0 * ratio, 0.4f, 3.f);
