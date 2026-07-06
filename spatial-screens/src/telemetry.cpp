@@ -64,7 +64,7 @@ void Telemetry::send_app(float fps, bool sixdof, bool anchored, float distance,
     last_app_ms_ = t;
     char buf[512];
     snprintf(buf, sizeof(buf),
-             R"({"type":"app","fps":%.1f,"sixdof":%s,"anchored":%s,"distance":%.2f,"size":%.0f,"backend":"%s","direct":%s,"rss":%d,"stereo":%s,"screens":%d})",
+             R"({"type":"app","fps":%.1f,"sixdof":%s,"anchored":%s,"distance":%.2f,"size":%.2f,"backend":"%s","direct":%s,"rss":%d,"stereo":%s,"screens":%d})",
              fps, sixdof ? "true" : "false", anchored ? "true" : "false",
              distance, size_in, backend, direct ? "true" : "false", rss_mb,
              stereo ? "true" : "false", screens);

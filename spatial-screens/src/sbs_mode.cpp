@@ -36,7 +36,8 @@ int sbs_enter(XRDeviceProviderHandle provider, Display* dpy,
     }
     fprintf(stderr, "sbs: %s never reported 3840-wide in %d ms — restoring 2D\n",
             output_name.c_str(), timeout_ms);
-    xr_device_provider_set_display_mode(provider, orig);
+    int rc2 = xr_device_provider_set_display_mode(provider, orig);
+    fprintf(stderr, "sbs: restore mode 0x%02x -> rc %d\n", orig, rc2);
     return -1;
 }
 
