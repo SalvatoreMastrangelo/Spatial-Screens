@@ -66,20 +66,26 @@ Researched plan: [`phase2-spatial-screens.md`](phase2-spatial-screens.md). Summa
 
 ### Future ideas / possible additions (backlog)
 
-Forward-looking feature ideas, not yet scheduled. Extends the already-noted
-per-screen-placement + window-capture roadmap items in `feat-stereo-3d.md`.
+Forward-looking feature ideas, now with design docs (2026-07-06) ready to seed
+isolated feature worktrees. They share one dependency chain: **per-screen
+selection is the foundation** both other features build on, so implement in the
+order below.
 
-- **Decouple floating screens from physical displays.** Today each virtual
-  screen is a UV sub-rect of one captured framebuffer, so screens are tied to
-  slices of a physical external display. Instead, capture a single window (or
-  arbitrary source) per screen so each floating screen is an independent panel,
-  not bound 1:1 to a physical output. (Depends on per-window capture — the
-  "window capture = roadmap" item.)
-- **Per-screen gesture targeting.** Let the user pick which screen the
-  move/reposition gestures act on, so screens move independently; highlight the
-  selected one. Proposed selection gesture: index + middle fingers raised and
-  side by side, all other fingers closed in a fist.
-- **Vertical placement (raise/lower screens).** Allow placing screens higher or
-  lower in space, not just around a horizontal ring. When repositioned (fist-
-  hold), a screen always re-orients to face the user — e.g. a panel placed above
-  the user tilts down toward them ("screens above me, facing me").
+1. **Per-screen selection & independent manipulation** *(foundation — build
+   first)* — design:
+   [`docs/specs/2026-07-06-screen-selection-design.md`](../specs/2026-07-06-screen-selection-design.md).
+   An index+middle "select" pose picks the screen nearest your gaze; the active
+   screen is highlighted; existing gestures (one-hand distance, two-hand grab)
+   retarget to it via a new per-screen world pose override. Lets each screen
+   move independently instead of everything acting on the whole rack.
+2. **Vertical placement + face-the-user** *(builds on #1)* — design:
+   [`docs/specs/2026-07-06-vertical-placement-design.md`](../specs/2026-07-06-vertical-placement-design.md).
+   Place screens higher/lower (the two-hand grab already moves vertically); on
+   reposition a screen re-orients to face the user's head, then world-locks
+   ("screens above me, facing me").
+3. **Floating window screens (decouple from physical displays)** *(builds on #1;
+   largest)* — design:
+   [`docs/specs/2026-07-06-floating-window-screens-design.md`](../specs/2026-07-06-floating-window-screens-design.md).
+   A screen's source becomes `{monitor-region | window}`: per-window XComposite
+   capture with its own texture, and `Ctrl+Alt+W` grabs the focused window onto
+   the active screen — a free-floating panel, not a slice of a physical output.
