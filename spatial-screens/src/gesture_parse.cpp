@@ -106,6 +106,7 @@ HandState parse_hand(const std::string& obj) {
     json_find_pair(obj, "pinch_pos", h.pinch_x, h.pinch_y);
     json_find_string(obj, "pose", h.pose);
     h.has_landmarks = json_find_landmarks(obj, h.landmarks);
+    h.has_depth = json_find_number(obj, "depth", h.depth);  // absent => false, depth stays 0
     return h;
 }
 

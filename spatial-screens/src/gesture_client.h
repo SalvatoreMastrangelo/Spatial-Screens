@@ -20,6 +20,8 @@ struct HandState {
     std::string pose;        // "open_palm" | "fist" | "point" | "none" | ""
     float landmarks[21][2] = {}; // MediaPipe hand, normalized [0,1] image coords (x-right, y-down); thumb tip = [4], index tip = [8]
     bool has_landmarks = false;  // true iff a full 21-point array parsed
+    bool has_depth = false;      // true iff the sidecar sent a fused stereo depth
+    float depth = 0.f;           // meters, rough-scaled (see camera-fusion design)
 };
 
 // Both hands from one event. See gestures/protocol.py encode_event.

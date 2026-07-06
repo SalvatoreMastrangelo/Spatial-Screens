@@ -23,10 +23,11 @@ static std::string lm21(float base) {
 
 int main() {
     // Both hands present: left pinching (0.12 < 0.5), right open (0.9 >= 0.5).
+    // left carries fused depth; right does not.
     std::string both =
         "{\"type\":\"hand\",\"t\":1.5,"
         "\"left\":{\"present\":true,\"handedness\":\"left\",\"pinch_norm\":0.12,"
-        "\"pinch_pos\":[0.4,0.5],\"pose\":\"point\",\"landmarks\":" + lm21(0.10f) + "},"
+        "\"pinch_pos\":[0.4,0.5],\"pose\":\"point\",\"landmarks\":" + lm21(0.10f) + ",\"depth\":0.523},"
         "\"right\":{\"present\":true,\"handedness\":\"right\",\"pinch_norm\":0.90,"
         "\"pinch_pos\":[0.6,0.7],\"pose\":\"open_palm\",\"landmarks\":" + lm21(0.30f) + "}}";
     GestureEvent ev = parse_event(both);
@@ -43,6 +44,9 @@ int main() {
     CHECK(std::fabs(ev.right.pinch_x - 0.6f) < 1e-4f);
     CHECK(ev.right.has_landmarks == true);
     CHECK(std::fabs(ev.right.landmarks[20][0] - (0.30f + 20 * 0.01f)) < 1e-4f);
+    CHECK(ev.left.has_depth == true);
+    CHECK(std::fabs(ev.left.depth - 0.523f) < 1e-4f);
+    CHECK(ev.right.has_depth == false);   // right sent no depth
 
     // One hand present.
     std::string one =
