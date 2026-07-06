@@ -586,10 +586,13 @@ int main(int argc, char** argv) {
     VkExtent2D known_extent{0, 0};
     auto refresh_projection = [&]() {
         if (sout.direct) { glasses.w = int(vk.extent.width); glasses.h = int(vk.extent.height); }
-        // Direct: stereo iff the scanned-out mode is SBS-wide. Window: honor
-        // the config (debug SBS halves in a desktop window).
+        // Direct: stereo iff the scanned-out mode is SBS-wide. Window: SBS
+        // halves are only correct on an actually-SBS output — deliberate window
+        // stereo (--window debug) or a succeeded panel switch (g_sbs_orig >= 0).
+        // Otherwise the halves would squish into a 2D panel; spec §4 → mono.
         stereo_active = o.stereo &&
-            (sout.direct ? vk.extent.width >= 2 * vk.extent.height : true);
+            (sout.direct ? vk.extent.width >= 2 * vk.extent.height
+                         : (force_window || g_sbs_orig >= 0));
         uint32_t eye_w = stereo_active ? vk.extent.width / 2 : vk.extent.width;
         stereo_eye_frustum(eye_w, vk.extent.height, DIAG_FOV, near_z, r, t);
         known_extent = vk.extent;
