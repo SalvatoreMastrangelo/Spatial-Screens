@@ -1,7 +1,6 @@
 #include "gesture_parse.h"
 
 #include <cstdlib>
-#include <cstring>
 
 namespace {
 
@@ -116,14 +115,5 @@ GestureEvent parse_event(const std::string& line) {
     GestureEvent ev;
     ev.left = parse_hand(hand_object(line, "left"));
     ev.right = parse_hand(hand_object(line, "right"));
-    // Populate the legacy primary-hand view (left if present, else right).
-    const HandState& primary = ev.left.present ? ev.left : ev.right;
-    ev.present = primary.present;
-    ev.pinching = primary.pinching;
-    ev.pinch_x = primary.pinch_x;
-    ev.pinch_y = primary.pinch_y;
-    ev.pose = primary.pose;
-    ev.has_landmarks = primary.has_landmarks;
-    memcpy(ev.landmarks, primary.landmarks, sizeof(ev.landmarks));
     return ev;
 }
