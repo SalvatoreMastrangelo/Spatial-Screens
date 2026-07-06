@@ -223,9 +223,14 @@ Screen distance is untouched during a grab (the one-handed drag owns depth).
   not the bottleneck. **What actually worked:** run the two independent
   landmarker inferences *concurrently* (one thread each) — MediaPipe releases
   the GIL during its C++ graph, measured **1.74×** on hardware (~52 ms → ~30 ms
-  per two-plane cycle), now implemented in `run_inference`. This keeps
-  dual-camera per-hand tracking at the 15 Hz target, so neither downscaling nor
-  the single-frame `num_hands=2` fallback is needed.
+  per two-plane cycle), now implemented in `run_inference`. Paired with raising
+  the C++ sender's rate cap (`GESTURE_INFER_HZ` 15→30): the tracking camera runs
+  at ~25 Hz (40 ms grid), and the old 15 Hz cap (66.7 ms) aliased against that
+  grid to pass only every *other* frame (~12.5 Hz); a cap above the camera rate
+  passes them all. Together, threading + the higher cap took the live gesture
+  rate from **12.5 Hz → a stable 25 Hz** on hardware (verified), keeping
+  dual-camera per-hand tracking without downscaling or the single-frame
+  `num_hands=2` fallback.
 
 ## Files touched
 

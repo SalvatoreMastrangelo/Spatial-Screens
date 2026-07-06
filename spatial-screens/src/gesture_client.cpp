@@ -18,7 +18,14 @@ extern char** environ;
 
 namespace {
 
-constexpr double GESTURE_INFER_HZ = 15.0;
+// Upper bound on frames/sec sent to the sidecar. The tracking camera delivers
+// ~25 Hz (40 ms grid); this cap only matters as an anti-aliasing guard: it must
+// stay ABOVE the camera rate so the 1/HZ interval (here 33 ms) is shorter than
+// the 40 ms frame spacing, letting every camera frame through. A cap at/below
+// the camera rate (e.g. the old 15 Hz → 66.7 ms) aliases against the 40 ms grid
+// and passes only every other frame (~12.5 Hz). The sidecar keeps up at the full
+// 25 Hz because its two landmarker inferences run concurrently (~30 ms/cycle).
+constexpr double GESTURE_INFER_HZ = 30.0;
 
 double now_s() {
     using namespace std::chrono;
