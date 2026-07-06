@@ -86,15 +86,17 @@ bool GestureClient::start(const std::string& socket_path, const std::string& scr
     return true;
 }
 
-void GestureClient::maybe_send_frame(const uint8_t* gray8, int width, int height, double timestamp) {
+void GestureClient::maybe_send_frame(const uint8_t* left, const uint8_t* right,
+                                     int width, int height, double timestamp) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!enabled_) return;
     double t = now_s();
     if (t - last_send_s_ < 1.0 / GESTURE_INFER_HZ) return;
     last_send_s_ = t;
 
-    const size_t data_len = size_t(width) * size_t(height);
-    const uint32_t payload_len = uint32_t(8 + 4 + 4 + 1 + data_len);
+    const size_t plane_len = size_t(width) * size_t(height);
+    // header: f64 ts + i32 w + i32 h + u8 fmt + u8 n_planes, then 2 planes
+    const uint32_t payload_len = uint32_t(8 + 4 + 4 + 1 + 1 + 2 * plane_len);
 
     std::string msg;
     msg.resize(4 + payload_len);
@@ -104,8 +106,10 @@ void GestureClient::maybe_send_frame(const uint8_t* gray8, int width, int height
     int32_t w = width, h = height;
     memcpy(p, &w, 4);                       p += 4;
     memcpy(p, &h, 4);                       p += 4;
-    *p = 0; /* format: GRAY8, per Task 1 */ p += 1;
-    memcpy(p, gray8, data_len);
+    *p = 0; /* format: GRAY8 */             p += 1;
+    *p = 2; /* n_planes: left,right */      p += 1;
+    memcpy(p, left, plane_len);             p += plane_len;
+    memcpy(p, right, plane_len);
 
     // A 640x480 GRAY8 frame (~307KB) exceeds the default Unix-domain-socket
     // send buffer (~208KB usable on this system) — confirmed on hardware:

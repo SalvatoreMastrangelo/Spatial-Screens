@@ -47,8 +47,10 @@ public:
                double connect_timeout_s = 5.0);
 
     // Rate-limited to GESTURE_INFER_HZ; safe to call every render frame.
-    // gray8 must be width*height bytes, one byte per pixel.
-    void maybe_send_frame(const uint8_t* gray8, int width, int height, double timestamp);
+    // `left` and `right` must each be width*height bytes (GRAY8), one byte per
+    // pixel — the two tracking-camera planes, sent together as one frame.
+    void maybe_send_frame(const uint8_t* left, const uint8_t* right,
+                          int width, int height, double timestamp);
 
     // Non-blocking. Drains all buffered events and returns the newest;
     // returns the last-known event (or a default one) if nothing new

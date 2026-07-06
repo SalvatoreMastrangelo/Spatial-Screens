@@ -208,7 +208,7 @@ static constexpr double FIST_HOLD_SECONDS = 0.5;          // how long a fist mus
 static void on_imu_noop(float*, double) {}
 static void on_pose_noop(float*, double) {}
 
-static void on_camera_carina(char* image_left0, char* /*image_right0*/,
+static void on_camera_carina(char* image_left0, char* image_right0,
                               char* /*image_left1*/, char* /*image_right1*/,
                               double timestamp, int width, int height) {
     if (g_probe_camera && g_probe_frames_remaining > 0) {
@@ -226,7 +226,9 @@ static void on_camera_carina(char* image_left0, char* /*image_right0*/,
     }
     g_cam_w.store(width, std::memory_order_relaxed);
     g_cam_h.store(height, std::memory_order_relaxed);
-    g_gestures.maybe_send_frame(reinterpret_cast<uint8_t*>(image_left0), width, height, timestamp);
+    g_gestures.maybe_send_frame(reinterpret_cast<uint8_t*>(image_left0),
+                                reinterpret_cast<uint8_t*>(image_right0),
+                                width, height, timestamp);
 }
 
 static int scan_viture_pid() {
