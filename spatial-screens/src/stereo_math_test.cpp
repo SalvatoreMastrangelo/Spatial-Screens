@@ -189,6 +189,33 @@ static void test_pose_override() {
     CHECK(std::fabs(p.z + 1.f) < 1e-4f);  // 1 m straight ahead, formula path
 }
 
+static void test_pick_gaze_screen() {
+    Quat head_q;                 // identity → forward = (0,0,-1)
+    Vec3 head_p{0, 0, 0};
+
+    // Dead-center screen wins over an off-axis one.
+    std::vector<Vec3> two = { {0, 0, -2},      // straight ahead, dot = 1
+                              {2, 0, -2} };     // 45° off, dot ≈ 0.707
+    CHECK(pick_gaze_screen(two, head_p, head_q, 40.f) == 0);
+
+    // The 45° screen alone is outside a 40° cone → nothing selected.
+    std::vector<Vec3> side = { {2, 0, -2} };
+    CHECK(pick_gaze_screen(side, head_p, head_q, 40.f) == -1);
+    // ...but a wider cone admits it.
+    CHECK(pick_gaze_screen(side, head_p, head_q, 50.f) == 0);
+
+    // A screen behind the head is excluded (dot < 0).
+    std::vector<Vec3> behind = { {0, 0, 2} };
+    CHECK(pick_gaze_screen(behind, head_p, head_q, 40.f) == -1);
+
+    // Empty rack → -1.
+    CHECK(pick_gaze_screen({}, head_p, head_q, 40.f) == -1);
+
+    // Degenerate: a screen exactly at the head position is skipped, not NaN.
+    std::vector<Vec3> at_head = { {0, 0, 0}, {0, 0, -1} };
+    CHECK(pick_gaze_screen(at_head, head_p, head_q, 40.f) == 1);
+}
+
 static void test_stereo_math() {
     // Camera shifted +x (right eye) moves world points -x in view space:
     // right eye gets a NEGATIVE view-space offset, left eye positive.
@@ -213,6 +240,7 @@ int main() {
     test_scene_build();
     test_scene_pose();
     test_pose_override();
+    test_pick_gaze_screen();
     test_stereo_math();
     if (failures == 0) { printf("stereo_math_test: all checks passed\n"); return 0; }
     printf("stereo_math_test: %d failure(s)\n", failures);

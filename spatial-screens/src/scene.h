@@ -35,3 +35,9 @@ void scene_screen_pose(const ScreenInst& s, const Quat& rack_q, const Vec3& rack
 void world_to_rack_frame(const Quat& rack_q, const Vec3& rack_p,
                          const Quat& world_q, const Vec3& world_p,
                          Quat& out_ori, Vec3& out_pos);
+
+// Gaze-center pick: index of the screen whose direction from head_p is most
+// aligned with head-forward (head_q · -z) and within cone_deg; -1 if none.
+// A screen coincident with the head (zero direction) is skipped.
+int pick_gaze_screen(const std::vector<Vec3>& screen_pos,
+                     const Vec3& head_p, const Quat& head_q, float cone_deg);

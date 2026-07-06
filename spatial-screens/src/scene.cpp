@@ -1,5 +1,6 @@
 #include "scene.h"
 
+#include <cmath>
 #include <cstdio>
 
 namespace {
@@ -82,4 +83,22 @@ void world_to_rack_frame(const Quat& rack_q, const Vec3& rack_p,
     Vec3 d = { world_p.x - rack_p.x, world_p.y - rack_p.y, world_p.z - rack_p.z };
     out_pos = qrot(inv, d);
     out_ori = qmul(inv, world_q);
+}
+
+int pick_gaze_screen(const std::vector<Vec3>& screen_pos,
+                     const Vec3& head_p, const Quat& head_q, float cone_deg) {
+    Vec3 fwd = qrot(head_q, {0, 0, -1});
+    float cos_cone = std::cos(cone_deg * float(M_PI) / 180.f);
+    int best = -1;
+    float best_dot = cos_cone;   // must beat the cone edge to qualify
+    for (size_t i = 0; i < screen_pos.size(); i++) {
+        Vec3 d = { screen_pos[i].x - head_p.x,
+                   screen_pos[i].y - head_p.y,
+                   screen_pos[i].z - head_p.z };
+        float len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+        if (len < 1e-6f) continue;                 // screen at the head — skip
+        float dot = (d.x * fwd.x + d.y * fwd.y + d.z * fwd.z) / len;
+        if (dot > best_dot) { best_dot = dot; best = int(i); }
+    }
+    return best;
 }
