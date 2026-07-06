@@ -67,9 +67,9 @@ Researched plan: [`phase2-spatial-screens.md`](phase2-spatial-screens.md). Summa
 ### Future ideas / possible additions (backlog)
 
 Forward-looking feature ideas, now with design docs (2026-07-06) ready to seed
-isolated feature worktrees. They share one dependency chain: **per-screen
-selection is the foundation** both other features build on, so implement in the
-order below.
+isolated feature worktrees. Items 1–3 share one dependency chain: **per-screen
+selection is the foundation** the other two build on, so implement in that
+order. Item 4 is an independent track (no dependency on 1–3).
 
 1. **Per-screen selection & independent manipulation** *(foundation — build
    first)* — design:
@@ -89,3 +89,16 @@ order below.
    A screen's source becomes `{monitor-region | window}`: per-window XComposite
    capture with its own texture, and `Ctrl+Alt+W` grabs the focused window onto
    the active screen — a free-floating panel, not a slice of a physical output.
+4. **Camera fusion for depth** *(independent track — the proper next project;
+   deferred 2026-07-06)* — design:
+   [`docs/specs/2026-07-06-camera-fusion-depth-design.md`](../specs/2026-07-06-camera-fusion-depth-design.md)
+   (surfaced by the two-hand gestures feature's "Future ideas"). Fuse the two
+   grayscale tracking cameras to recover each
+   hand's true 3D position from stereo disparity — unlocking depth-aware
+   gestures (push/pull-to-move-in-Z) a single 2D camera can't do robustly, and
+   inherently deduplicating hands (one 3D entity, not one-per-camera). Not a
+   quick fix: the SDK exposes **no stereo calibration** (raw left/right buffers
+   only), so it needs self-calibration → rectification → correspondence →
+   triangulation — a multi-day computer-vision effort. Today the sidecar already
+   forwards both camera planes but uses only the left; the second is reserved
+   for this.
