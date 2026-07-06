@@ -92,6 +92,25 @@ std::string state_file_path() {
     return xdg_dir("XDG_STATE_HOME", "/.local/state") + "/spatial-screens/state";
 }
 
+// "screen.N.field" (N 1-based, <= 16). Grows o.screens to N; unknown fields
+// and malformed indices report unknown-key (caller warns with line info).
+static bool set_screen_option(Options& o, const std::string& k, const std::string& v) {
+    size_t dot2 = k.find('.', 7);          // after "screen."
+    if (dot2 == std::string::npos || dot2 == 7) return false;
+    int n = atoi(k.substr(7, dot2 - 7).c_str());
+    if (n < 1 || n > 16) return false;
+    if (size_t(n) > o.screens.size()) o.screens.resize(size_t(n));
+    ScreenCfg& s = o.screens[size_t(n) - 1];
+    std::string f = k.substr(dot2 + 1);
+    if (f == "monitor") s.monitor = v;
+    else if (f == "azimuth") parse_float(k, v, s.azimuth);
+    else if (f == "elevation") parse_float(k, v, s.elevation);
+    else if (f == "distance") parse_float(k, v, s.distance);
+    else if (f == "size") parse_float(k, v, s.size);
+    else return false;
+    return true;
+}
+
 bool set_option(Options& o, const std::string& k, const std::string& v) {
     if (k == "monitor") o.monitor = v;
     else if (k == "capture") o.capture = v;
@@ -108,6 +127,10 @@ bool set_option(Options& o, const std::string& k, const std::string& v) {
     else if (k == "smooth-ori") parse_float(k, v, o.smooth_ori);
     else if (k == "window") o.window = parse_bool(v);
     else if (k == "ws-port") { float f; if (parse_float(k, v, f)) o.ws_port = int(f); }
+    else if (k == "stereo") o.stereo = parse_bool(v);
+    else if (k == "ipd-mm") parse_float(k, v, o.ipd_mm);
+    else if (k == "workspace") o.workspace = v;
+    else if (k.rfind("screen.", 0) == 0) return set_screen_option(o, k, v);
     else return false;
     return true;
 }
@@ -126,6 +149,8 @@ void load_state(AppState& s) {
                       if (k == "distance") parse_float(k, v, st.distance);
                       else if (k == "size") parse_float(k, v, st.size);
                       else if (k == "restore-token") st.restore_token = v;
+                      else if (k == "rack-distance-scale") parse_float(k, v, st.rack_distance_scale);
+                      else if (k == "rack-size-scale") parse_float(k, v, st.rack_size_scale);
                       else return false;
                       return true;
                   }, &s);
@@ -144,6 +169,8 @@ bool save_state(const AppState& s) {
     fprintf(f, "# written by spatial-screens — do not edit while it runs\n");
     if (s.distance > 0) fprintf(f, "distance = %.3f\n", s.distance);
     if (s.size > 0) fprintf(f, "size = %.1f\n", s.size);
+    if (s.rack_distance_scale > 0) fprintf(f, "rack-distance-scale = %.3f\n", s.rack_distance_scale);
+    if (s.rack_size_scale > 0) fprintf(f, "rack-size-scale = %.3f\n", s.rack_size_scale);
     if (!s.restore_token.empty()) fprintf(f, "restore-token = %s\n", s.restore_token.c_str());
     fclose(f);
     if (rename(tmp.c_str(), path.c_str()) != 0) {

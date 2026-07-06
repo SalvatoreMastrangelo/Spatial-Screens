@@ -317,6 +317,8 @@ int main(int argc, char** argv) {
                o.distance, o.size, o.pitch_trim, o.predict_ms);
         printf("smooth-pos = %.2f\nsmooth-ori = %.2f\nwindow = %s\nws-port = %d\n",
                o.smooth_pos, o.smooth_ori, o.window ? "true" : "false", o.ws_port);
+        printf("stereo = %s\nipd-mm = %.1f\nworkspace = %s\nscreens = %zu configured\n",
+               o.stereo ? "true" : "false", o.ipd_mm, o.workspace.c_str(), o.screens.size());
         return 0;
     }
     Telemetry tele;
