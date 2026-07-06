@@ -43,6 +43,12 @@ int main() {
     CHECK(std::fabs(ev.right.pinch_x - 0.6f) < 1e-4f);
     CHECK(ev.right.has_landmarks == true);
     CHECK(std::fabs(ev.right.landmarks[20][0] - (0.30f + 20 * 0.01f)) < 1e-4f);
+    // Legacy primary-hand view mirrors the LEFT hand here (left present).
+    CHECK(ev.present == true);
+    CHECK(ev.pinching == true);
+    CHECK(ev.pose == "point");
+    CHECK(std::fabs(ev.pinch_x - 0.4f) < 1e-4f);
+    CHECK(ev.has_landmarks == true);
 
     // One hand present.
     std::string one =
@@ -57,6 +63,11 @@ int main() {
     CHECK(ev2.right.present == true);
     CHECK(ev2.right.pinching == true);
     CHECK(ev2.right.pose == "fist");
+    // Legacy primary-hand view falls back to the RIGHT hand (left absent).
+    CHECK(ev2.present == true);
+    CHECK(ev2.pinching == true);
+    CHECK(ev2.pose == "fist");
+    CHECK(std::fabs(ev2.pinch_x - 0.5f) < 1e-4f);
 
     // Neither hand present.
     std::string none = "{\"type\":\"hand\",\"t\":3.0,"
@@ -65,6 +76,8 @@ int main() {
     CHECK(ev3.left.present == false);
     CHECK(ev3.right.present == false);
     CHECK(ev3.left.has_landmarks == false);
+    // Legacy primary-hand view: neither hand present.
+    CHECK(ev3.present == false);
 
     if (failures == 0) { printf("gesture_parse_test: all checks passed\n"); return 0; }
     printf("gesture_parse_test: %d failure(s)\n", failures);
