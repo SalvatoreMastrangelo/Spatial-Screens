@@ -139,6 +139,14 @@ export class BridgeClient {
       // spatial-screens status (fps, tracking, screen placement).
       this._emit('app', msg);
       break;
+    case 'hands':
+      // spatial-screens fused per-hand depth (meters); depth < 0 = none.
+      this._emit('hands', {
+        t,
+        left: { present: msg.left_present, depth: msg.left_depth },
+        right: { present: msg.right_present, depth: msg.right_depth },
+      });
+      break;
     default:
       this._emit('log', { level: 'debug', text: `unknown msg ${msg.type}` });
     }

@@ -109,3 +109,15 @@ export function showAppPanel(msg) {
 export function hideAppPanel() {
   $('app-card').hidden = true;
 }
+
+export function showHandsPanel(msg) {
+  $('hands-card').hidden = false;
+  $('hands-left').textContent = msg.left?.present && msg.left.depth >= 0
+    ? `${msg.left.depth.toFixed(2)} m` : '—';
+  $('hands-right').textContent = msg.right?.present && msg.right.depth >= 0
+    ? `${msg.right.depth.toFixed(2)} m` : '—';
+}
+
+export function hideHandsPanel() {
+  $('hands-card').hidden = true;
+}

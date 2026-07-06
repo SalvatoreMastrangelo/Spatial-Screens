@@ -8,6 +8,7 @@ import {
   showDeviceInfo, showDeviceState, updateCaps, updateStats,
   updateReadouts, renderEventLog, setStatus, setDofBadge,
   showAppPanel, hideAppPanel,
+  showHandsPanel, hideHandsPanel,
 } from './ui/panels.js';
 
 const $ = (id) => document.getElementById(id);
@@ -113,6 +114,7 @@ async function connectBridge() {
   });
   d.on('log', (msg) => state.log(`[bridge] ${msg.text}`, 'dim'));
   d.on('app', (msg) => showAppPanel(msg));
+  d.on('hands', (msg) => showHandsPanel(msg));
   try {
     setStatus('connecting to bridge…', 'busy');
     await d.connect();
@@ -136,6 +138,7 @@ function teardown() {
   showDeviceInfo(null);
   showDeviceState({});
   hideAppPanel();
+  hideHandsPanel();
   updateCaps(state.caps);
   $('btn-recenter').disabled = true;
   $('btn-level').disabled = true;
