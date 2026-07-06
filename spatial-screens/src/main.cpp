@@ -840,6 +840,7 @@ int main(int argc, char** argv) {
                     if (!was_two_up[i]) {           // rising edge only
                         // Recentered head frame — matches the screens' world frame.
                         Quat head_rc = qmul(qconj(ori_offset), head_q);
+                        Quat head_pick = qmul(head_rc, trim);  // match render camera (view applies trim); else pick is pitch_trim off
                         Vec3 hp = qrot(qconj(ori_offset), head_p);
                         std::vector<Vec3> spos(scene.size());
                         for (size_t k = 0; k < scene.size(); k++) {
@@ -848,9 +849,10 @@ int main(int argc, char** argv) {
                                               rack_dist_scale, sq, sp);
                             spos[k] = sp;
                         }
-                        int pick = pick_gaze_screen(spos, hp, head_rc, SELECT_CONE_DEG);
+                        int pick = pick_gaze_screen(spos, hp, head_pick, SELECT_CONE_DEG);
                         active_screen = pick;        // -1 doubles as deselect
                         if (pick >= 0 && !scene[pick].cfg.has_pose_override) {
+                            if (multi) scene[pick].cfg.size *= rack_size_scale;  // fold rack scale in -> no size jump when we detach it below
                             // Seed the override from the formula pose so retarget
                             // gestures have a well-defined pose and there's no jump.
                             Quat wq; Vec3 wp;
@@ -1080,6 +1082,10 @@ int main(int argc, char** argv) {
                 mat_projection_vk(r, t, near_z, far_z, proj);
 
                 const float white[4] = { 1, 1, 1, 1 };
+                // Shared "selection/pinch active" green — the selection border,
+                // the pinch-status dot, and the fingertip highlight must all use
+                // the same green (design: the feedback channels agree).
+                const float status_green[4] = { 0.20f, 0.90f, 0.30f, 1.f };
                 for (int i = 0; i < nscene; i++) {
                     if (nd >= 72) break;
                     const ScreenInst& s = *order[i].s;
@@ -1088,7 +1094,7 @@ int main(int argc, char** argv) {
                     mat_mul(view, model, vm);
                     mat_mul(proj, vm, smvp);
                     float aspect = multi ? s.aspect : cap_aspect;
-                    float diag_m = s.cfg.size * (multi ? rack_size_scale : 1.f) * 0.0254f;
+                    float diag_m = s.cfg.size * ((multi && !s.cfg.has_pose_override) ? rack_size_scale : 1.f) * 0.0254f;
                     float w2 = diag_m * aspect / std::sqrt(1 + aspect * aspect) * 0.5f;
                     float h2 = diag_m / std::sqrt(1 + aspect * aspect) * 0.5f;
                     QuadDraw& d = dl[nd++];
@@ -1103,7 +1109,6 @@ int main(int argc, char** argv) {
                     // the content. order[] is the sorted draw order; match the
                     // active screen by identity, not index.
                     if (active_screen >= 0 && order[i].s == &scene[active_screen]) {
-                        const float sel_green[4] = { 0.20f, 0.90f, 0.30f, 1.f };
                         const float b = SELECT_BORDER_M;
                         // top, bottom, left, right (top/bottom widened by b to fill corners)
                         const float bars[4][4] = {
@@ -1115,7 +1120,7 @@ int main(int argc, char** argv) {
                         for (int e = 0; e < 4 && nd < 72; e++) {
                             QuadDraw& bd = dl[nd++];
                             memcpy(bd.mvp, smvp, sizeof(smvp));
-                            memcpy(bd.color, sel_green, 4 * sizeof(float));
+                            memcpy(bd.color, status_green, 4 * sizeof(float));
                             bd.rect[0] = bars[e][0]; bd.rect[1] = bars[e][1];
                             bd.rect[2] = bars[e][2]; bd.rect[3] = bars[e][3];
                             bd.textured = false;
@@ -1144,11 +1149,6 @@ int main(int argc, char** argv) {
                 d.rect[0] = 0; d.rect[1] = 0; d.rect[2] = dot_r; d.rect[3] = dot_r;
                 d.textured = false;
                 d.circle = true;
-
-                // Shared "pinch active" green — the pinch-status dot and the
-                // fingertip highlight must use the same green (design: the two
-                // feedback channels agree).
-                const float status_green[4] = { 0.20f, 0.90f, 0.30f, 1.f };
 
                 // Per-hand pinch/arm-status dots: one per hand at the bottom
                 // corners (left hand -> bottom-left, right hand -> bottom-right),
