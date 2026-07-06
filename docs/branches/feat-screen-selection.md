@@ -94,6 +94,8 @@ Base: `08a4766` (design + plan commit), branched from `main` @ `80e3a23`.
 | 6 | `bae4fb9` | green outside border: 4 coplanar edge bars around the active screen; draw cap `64→72` (`main.cpp`) |
 | 7 | `1ceea36` | branch resume doc (this file) |
 | fix | `9e02f7e` | final-review fixes: gaze pick applies `pitch_trim` (`head_pick = qmul(head_rc, trim)`); **full size-detach** of the selected screen (fold `rack_size_scale` into `cfg.size` once at select → no jump, then render overridden screens without it); de-dup the selection green into one hoisted `status_green` |
+| hw | `f3df5e5` | hardware-pass live tweaks (2026-07-07): border 10→3 mm; single fist = recenter selected screen / both fists = global recenter; one-hand pinch distance radial from the head; two-hand grab head-anchored; help text lists the new gestures |
+| fix | `7f3efd5` | post-tweak review fix: gate head-anchored grab to `active_screen >= 0`; restore world-anchored `gr.anchor` reposition for the rack-global grab (rack origin sits on the head → `d0≈0` had killed it) |
 
 ## Deferred / next-feature notes
 
@@ -129,22 +131,32 @@ Base: `08a4766` (design + plan commit), branched from `main` @ `80e3a23`.
       diag clamp `[20,200]` vs size-hotkey `[10,400]` mismatch (now in
       visible-size space after the detach); no "reset screen to rack" affordance
       yet; exact-cone-boundary unit test.
-- [ ] **Hardware pass (next step, user-driven on the glasses).** In a
-      multi-screen rack + stereo session, confirm:
-    - [ ] **Vertical select under `pitch_trim = 16`:** looking at a screen
-          above/below center selects the one you're actually aiming at (this is
-          what the `pitch_trim` pick fix targets — the reason to test it live).
-    - [ ] **Selecting in a globally-scaled rack** (after `-`/`=` global resize)
-          produces **no size pop** on the selected screen, and subsequent per-
-          screen resizes feel 1:1.
-    - [ ] `two_up` while looking at a screen selects it; a **green border
-          appears outside** that screen and the content inside is untouched;
-          both eyes show it.
-    - [ ] One-hand pinch-drag / `[` `]` moves only the active screen's
-          distance; the other screens don't move. `-` `=` resizes only the
-          active screen. Two-hand grab repositions/resizes only the active
-          screen.
-    - [ ] `two_up` while looking away from all screens (or re-selecting)
-          deselects → gestures return to rack-global control.
-    - [ ] Recenter keeps the selection + layout coherent (overridden screens
-          stay put relative to the rack, not the room).
+- [x] **Hardware pass — PASSED (2026-07-07, glasses-on).** Full stack (stereo
+      SBS + 4-screen 2×2 rack + gesture sidecar). Confirmed on-device: `two_up`
+      gaze-select + green border (outside, content untouched, both eyes);
+      correct **vertical aim under `pitch_trim = 16`**; per-screen distance /
+      size / grab move only the active screen; **no size pop** selecting in a
+      globally-scaled rack (live `rack_size_scale = 1.65`); deselect returns to
+      rack-global; recenter coherent. User verdict on the final grab: "works
+      like a charm."
+    - Live tweaks landed as `f3df5e5` (see the implementation map): 3 mm border;
+      per-screen single-fist recenter + both-fists global recenter;
+      head-radial one-hand pinch distance; head-anchored two-hand grab.
+    - Diagnostic notes for next time: **hands not detected = too dark** (sidecar
+      at ~32 % CPU means frames are flowing and MediaPipe is running — it's
+      lighting, not the pipeline); "move head up" is usually **rotation**, and
+      6DoF position can read `frozen` when you're still, so the grab is anchored
+      to the head **pose**, not position.
+- [x] **Post-tweak review + fix (2026-07-07, opus).** Caught a regression: the
+      head-anchored grab broke the **rack-global (nothing-selected)** grab
+      (`d0≈0` because the rack origin is on the head → dead reposition +
+      head-locked rack). Fixed in `7f3efd5` (gate to `active_screen ≥ 0`, restore
+      the world-anchored rack path). Clean build + 3 suites green.
+    - [ ] **Optional re-confirm (low risk):** the rack-global two-hand grab is
+          now the **restored pre-tweak behavior** (already validated in the
+          two-hand HW pass) — not re-tested this session.
+    - **Backlog (non-blocking):** grabbed screen follows head *position* not
+      facing (re-face on turn is a future option); per-screen recenter bakes head
+      roll/pitch at trigger (yaw-only alt); `grab_update` now carries dead
+      `distance`/`gain` args; new gesture logic lacks unit coverage (extract the
+      anchor-rebuild to a pure helper + a `d0≈0` regression test).
