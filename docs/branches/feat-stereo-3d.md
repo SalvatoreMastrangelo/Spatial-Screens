@@ -37,8 +37,14 @@ Glasses-on spike 2026-07-05 (`docs/testing/2026-07-05-sbs-3d-spike-handoff.md`):
    stereo failure. Free per-screen placement + window capture = roadmap.
    NOTE: work continues in worktree `.claude/worktrees/stereo-3d` — the main
    checkout hosts a parallel session (feat/two-hand-gestures).
-2. Implementation per the design doc (est. ~2–4 days).
-3. Hardware verification pass, then merge to master.
+2. **Implementation plan** — `docs/specs/2026-07-06-stereo-3d-plan.md`
+   (written 2026-07-06): 12 bite-sized TDD tasks — pose-math extraction,
+   config keys, scene module, stereo helpers, uv/two-viewport renderer,
+   sbs_mode module + spike --restore, run.sh workspace, then 4 staged
+   main.cpp integration tasks (SDK reorder → multi-screen mono → stereo →
+   runtime adaptation), docs last.
+3. Implementation per the plan (est. ~2–4 days).
+4. Hardware verification pass, then merge to master.
 
 ## Current state / next step
 
