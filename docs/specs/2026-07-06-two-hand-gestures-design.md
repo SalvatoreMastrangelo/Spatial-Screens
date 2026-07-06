@@ -2,7 +2,21 @@
 
 Date: 2026-07-06
 Status: approved, pre-implementation
-Branch: `feat/two-hand-gestures` (off `master`)
+
+> **⚠️ SUPERSEDED IN PART BY THE HARDWARE PIVOT (2026-07-06).** This document
+> describes the *original approved* design: **dual-camera, per-hand** (left hand
+> from the left tracking camera, right hand from the right, routed by MediaPipe
+> handedness). On-glasses testing killed that approach (stereo parallax doubled
+> a near-center hand; 2× inference lag), and the shipped code uses **single-frame
+> `num_hands=2`** instead: both hands detected in ONE camera image, split
+> left/right by spatial x-position. So the Summary/Architecture/Components below
+> (two `HandLandmarker` instances, per-camera streams, handedness routing) are
+> the *design intent*, **not what ships**. For the as-built system and the full
+> pivot rationale, read `docs/branches/feat-two-hand-gestures.md` and the
+> "Future ideas" section at the end of this file. The wire protocol, event
+> schema, per-hand arming, grab math, and HUD described here all shipped as-is —
+> only the hand-detection/source layer changed.
+Branch: `feat/two-hand-gestures`
 
 ## Summary
 
@@ -260,14 +274,19 @@ Screen distance is untouched during a grab (the one-handed drag owns depth).
   not the bottleneck. **What actually worked:** run the two independent
   landmarker inferences *concurrently* (one thread each) — MediaPipe releases
   the GIL during its C++ graph, measured **1.74×** on hardware (~52 ms → ~30 ms
-  per two-plane cycle), now implemented in `run_inference`. Paired with raising
+  per two-plane cycle). **That threading was then REMOVED in the single-frame
+  pivot (2026-07-06):** single-frame `num_hands=2` runs ONE inference, so there
+  is nothing to parallelize — the sidecar is single-threaded again (~24-27
+  ms/cycle). The rest of this bullet is the *superseded* dual-camera narrative,
+  kept for the aliasing lesson. It paired the threading with raising
   the C++ sender's rate cap (`GESTURE_INFER_HZ` 15→30): the tracking camera runs
   at ~25 Hz (40 ms grid), and the old 15 Hz cap (66.7 ms) aliased against that
   grid to pass only every *other* frame (~12.5 Hz); a cap above the camera rate
   passes them all. Together, threading + the higher cap took the live gesture
-  rate from **12.5 Hz → a stable 25 Hz** on hardware (verified), keeping
-  dual-camera per-hand tracking without downscaling or the single-frame
-  `num_hands=2` fallback.
+  rate from **12.5 Hz → a stable 25 Hz** on hardware at the time. The single-frame pivot later superseded this whole
+  dual-camera path; the shipped sidecar uses ONE inference at the same 15 Hz
+  cap (`GESTURE_INFER_HZ`), and raising the cap toward the ~25 Hz camera rate
+  is a documented follow-up pending a fresh on-hardware measurement.
 
 ## Files touched
 

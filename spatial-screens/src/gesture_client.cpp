@@ -19,15 +19,16 @@ extern char** environ;
 namespace {
 
 // Upper bound on frames/sec sent to the sidecar. The tracking camera delivers
-// ~25 Hz (40 ms grid). Pushing the full 25 Hz was tried (cap 30) but the
-// two-camera sidecar can't sustain a 40 ms cycle once hands are in frame (the
-// landmark stage adds cost), so the sender out-drove it: maybe_send_frame's
-// blocking send holds the mutex that the render loop's poll() also needs,
-// stalling the render loop (fps → single digits, felt as lag). At 15 Hz the
-// 66.7 ms interval aliases the 40 ms grid down to ~12.5 Hz (every OTHER camera
-// frame), which the threaded sidecar drains comfortably (~30-50 ms/cycle),
-// keeping the pipeline smooth. 12.5 Hz is the honest sustainable rate for
-// dual-camera tracking with hands present.
+// ~25 Hz (40 ms grid). maybe_send_frame's blocking send holds the mutex that
+// the render loop's poll() also needs, so if the sender out-drives the sidecar
+// the render loop stalls (fps → single digits, felt as lag). 15 Hz was the
+// safe rate for the original dual-camera/two-inference sidecar; the project
+// then pivoted to single-frame num_hands=2 (ONE inference, ~24-27 ms — see
+// hand_tracker.py and docs/branches/feat-two-hand-gestures.md), which has
+// noticeably more headroom, but 15 Hz is kept as the hardware-verified value
+// (glasses pass 2026-07-06, fps ~115, no backpressure). Raising it toward the
+// ~25 Hz camera rate is a documented follow-up pending a fresh on-hardware
+// measurement — do not bump it blind.
 constexpr double GESTURE_INFER_HZ = 15.0;
 
 double now_s() {

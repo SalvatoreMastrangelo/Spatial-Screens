@@ -13,8 +13,10 @@
 //        Shift+R also reset the VIO origin
 //        [ / ]  screen closer / farther      - / =  smaller / larger
 //        Q/Esc  quit
-//        Gestures (if the sidecar connects): pinch-drag vertical =
-//        distance (anchor stays fixed); fist held ~0.5s = recenter.
+//        Gestures (if the sidecar connects): open palm = arm that hand;
+//        with a hand armed, pinch-drag vertical = distance (anchor stays
+//        fixed), fist held ~0.5s = recenter — either hand works. With BOTH
+//        hands armed and pinching: spread = resize, midpoint = reposition.
 //
 // NOTE: stop viture-bridge before running — the SDK supports one client.
 // Presentation: Vulkan direct display by default (RandR non-desktop=1 +
@@ -644,8 +646,9 @@ int main(int argc, char** argv) {
 
     printf("running — hotkeys work globally with Ctrl+Alt: R recenter (Shift adds "
            "VIO reset), [ ] distance, - = size, Q quit\n"
-           "gestures (if sidecar connected): pinch-drag vertical=distance, "
-           "fist-hold(0.5s)=recenter\n");
+           "gestures (if sidecar connected): open palm=arm (either hand); armed "
+           "hand pinch-drag vertical=distance, fist-hold(0.5s)=recenter; "
+           "both hands armed+pinching: spread=resize, midpoint=reposition\n");
 
     while (g_running) {
         // ---- input

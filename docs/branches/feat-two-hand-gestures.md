@@ -88,9 +88,36 @@ sidecar) and the hand-overlay work.
           for two-hand grab (hands stay on their sides) and symmetric single-hand
           gestures. Logged as a future idea (split hysteresis + head-motion
           compensation) in the design doc, not fixed here.
-- [ ] Final whole-branch review (recommended before merge — can run
-      `/code-review` or ultra; per-task reviews already passed)
+- [x] **Final whole-branch review — done (2026-07-06, opus reviewer).** Verdict
+      "ready with fixes": **no Critical, no functional or wire-format issues** —
+      pivot code clean (no dead threading refs), C++↔Python wire byte-compatible
+      across all three files, per-hand arm / two-hand grab state machine correct
+      (both-hands-disarm safety intact), overlay draw bounds safe, tests + HW
+      pass green. The two "should-fix-before-merge" items were **doc/comment
+      staleness only** and are FIXED: (a) design doc now carries a SUPERSEDED
+      pivot banner + the "threaded dual-inference now implemented" claim
+      corrected to note it was removed in the pivot; (b) `GESTURE_INFER_HZ`
+      comment rewritten for the single-frame reality; (c) `main.cpp` header +
+      runtime gesture-help text now describe either-hand + per-hand arm +
+      two-hand grab.
 - [ ] Merge to main (master was deleted 2026-07-06; main is the sole mainline)
+
+### Review backlog (non-blocking — deferred to follow-up, not fixed pre-merge)
+
+- **1-plane vs 2-plane send + rate cap** (efficiency): C++ still sends BOTH
+  camera planes though the single-frame sidecar uses only `planes[0]`
+  (~614→307 KB/frame if halved); and `GESTURE_INFER_HZ=15` was chosen for the
+  slower dual-camera sidecar. Dropping to one plane and re-measuring the cap
+  toward ~25 Hz needs a fresh on-hardware pass — do together.
+- **`read_frame` plane-size validation** (`protocol.py`): no check that
+  `len(body)` divides evenly by `n_planes` or that `plane_size == width*height`;
+  a malformed frame silently truncates (then `reshape` would raise and drop the
+  sidecar). Add a guard + a malformed-frame / `n_planes==0` test.
+- **Symmetric encode test** (`test_protocol.py`): add a right-present/left-absent
+  `encode_event` case (C++ parser side already covers this asymmetry).
+- **Defensive null-check** on the second plane in `maybe_send_frame`
+  (`gesture_client.cpp`) — Carina is always stereo, so low priority.
+- PEP8 2-blank-line nits across Python test files.
 
 ## Implementation map (commits on this branch)
 
