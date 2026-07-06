@@ -1012,13 +1012,14 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export LD_LIBRARY_PATH="$DIR/../sdk/lib/x86_64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/spatial-screens.conf"
-conf_get() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\(.*\)/\1/p" "$CONF" 2>/dev/null | tail -1; }
+conf_get() { [ -f "$CONF" ] || return 0; sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\(.*\)/\1/p" "$CONF" | tail -1 || true; }
 
 STEREO="$(conf_get stereo)";       STEREO="${STEREO:-true}"
+case "$STEREO" in true|1|yes) STEREO=true ;; *) STEREO=false ;; esac
 WORKSPACE="$(conf_get workspace)"; WORKSPACE="${WORKSPACE:-2x2}"
 PANEL="$(conf_get capture)"
 if [ -z "$PANEL" ]; then  # default: first connected non-glasses output
-    PANEL="$(xrandr | awk '/ connected/ {print $1}' | grep -v '^DP-1$' | head -1)"
+    PANEL="$(xrandr | awk '/ connected/ {print $1}' | grep -v '^DP-1$' | head -1 || true)"
 fi
 
 TILE_W=1920 TILE_H=1200
