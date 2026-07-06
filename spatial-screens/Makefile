@@ -47,7 +47,7 @@ src/telemetry.o: src/telemetry.cpp src/telemetry.h ../bridge/ws_server.hpp
 
 src/main.o: src/gesture_client.h src/capture.h src/config.h src/telemetry.h src/capture_portal.h
 
-src/%.o: src/%.cpp $(SHADER_HDRS) src/vk_renderer.h src/vk_surface.h
+src/%.o: src/%.cpp $(SHADER_HDRS) src/vk_renderer.h src/vk_surface.h src/pose_math.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # Generated SPIR-V headers are checked in so builds work without glslang.
