@@ -124,21 +124,27 @@ sidecar) and the hand-overlay work.
       stereo eyes). Draw cap `draws[2][40]`→`[2][64]`.
     - Clean build; **19 py + gesture-parse + gesture-manip + stereo-math green**
       (main's stereo tests still pass — no regression).
-- [ ] **Combined hardware pass (stereo × two-hand) — REQUIRED before main moves.**
-      The two features were each hardware-verified separately but never together.
-      Verify on the glasses: (1) two-hand grab reposition/resize in single-screen
-      mode still feels right after the rack remap; (2) multi-screen rack mode
-      grab (new v1) is sane; (3) status dots + hand overlay render correctly in
-      **both stereo eyes** (per-eye `eye_off`); (4) single-hand gestures + the
-      earlier single-frame handedness fix still hold. Launch `./run.sh` (single
-      SDK client). SDK is now fetched — `sdk/fetch-sdk.sh` or copy from the
-      primary checkout if `sdk/include`/`sdk/lib` are absent.
-- [ ] **Fast-forward `main` to `3b566ea`** only after the combined hardware pass.
-      main is checked out in the primary worktree and is clean → a clean FF
-      (`git -C <primary> merge --ff-only feat/two-hand-gestures`); the primary's
-      history already contains "merge X into feature" commits (e.g. `dd9e99f`),
-      so this topology matches convention. (master was deleted 2026-07-06; main
-      is the sole mainline.)
+- [x] **Combined hardware pass (stereo × two-hand) — PASSED (2026-07-06).**
+      Launched default `./run.sh` = **stereo SBS + 4-screen 2×2 rack + gesture
+      sidecar** (the hardest combined case), direct mode 3840×1200@90, `render:
+      stereo (SBS), eye 1920x1200`, `scene: 4 screen(s) (rack)`, sidecar
+      connected, HUD `rack-dist/rack-size` live. User verdict: **"everything
+      works"** — per-eye HUD (3 dots + overlay in both eyes), two-hand grab on
+      the rack (resize/reposition), single-hand gestures, and handedness all
+      good. Clean SIGINT shutdown; workspace scaling + SBS panel mode restored,
+      0 leftover VS monitors, DP-1 back to non-desktop=0.
+- [ ] **Fast-forward `main` — HELD (user decision 2026-07-06).** Branch is
+      verified and ready at **`6b5bbb9`** (integration merge `3b566ea` + the
+      final-review doc fixes + a docs-only merge-up of main's `5943801`
+      roadmap commit). FF is valid (`main` is an ancestor). Held because the
+      primary worktree — where `main` is checked out — has **active uncommitted
+      work** (a `roadmap.md` edit + 3 new untracked design docs:
+      floating-window-screens, screen-selection, vertical-placement). Land it
+      once that work is committed/stashed, with:
+      `git -C /home/salvatore/Desktop/code/viture merge --ff-only feat/two-hand-gestures`
+      The FF delta does not touch `roadmap.md` or the 3 new docs, so it won't
+      clobber them — the hold is only to avoid moving `main` under a live
+      session. (master deleted 2026-07-06; main is the sole mainline.)
 
 ### Review backlog (non-blocking — deferred to follow-up, not fixed pre-merge)
 
