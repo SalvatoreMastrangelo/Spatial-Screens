@@ -135,13 +135,21 @@ static void test_scene_pose() {
     CHECK(std::fabs(p.x - 1.f) < 1e-5f && std::fabs(p.y - 2.f) < 1e-5f &&
           std::fabs(p.z - 1.f) < 1e-5f);   // 3 + (-2)
 
-    // Orientation faces the origin: screen forward (-z rotated by q) points
-    // back at the rack origin for azimuth 90 -> forward = -x.
+    // Orientation: for azimuth 90 the screen's local -z axis points outward (+x),
+    // so its +z face (the rendered front) looks back at the rack origin.
     cfg[0].azimuth = 90;
     s = scene_build(cfg, mons, fb);
     scene_screen_pose(s[0], rq, rp, 1.f, q, p);
     Vec3 fwd = qrot(q, {0, 0, -1});
     CHECK(std::fabs(fwd.x - 1.f) < 1e-5f);  // screen's -z axis points at +x (outward)
+
+    // Compound angle: azimuth 90 AND elevation 45, distance 1.
+    // Pitch applied first, then yaw: x ≈ 0.70711, y ≈ 0.70711, z ≈ 0.
+    cfg[0].azimuth = 90; cfg[0].elevation = 45; cfg[0].distance = 1.f;
+    s = scene_build(cfg, mons, fb);
+    scene_screen_pose(s[0], rq, rp, 1.f, q, p);
+    CHECK(std::fabs(p.x - 0.70711f) < 1e-5f && std::fabs(p.y - 0.70711f) < 1e-5f &&
+          std::fabs(p.z) < 1e-5f);
 }
 
 static void test_stereo_math() {

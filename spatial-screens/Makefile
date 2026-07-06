@@ -16,7 +16,7 @@ LDFLAGS := -L$(SDK_LIB) -lglasses $(VK_LIBS) -lpthread $(CAP_LIBS) \
 
 SHADER_HDRS := shaders/quad.vert.spv.h shaders/quad.frag.spv.h
 OBJS := src/main.o src/vk_renderer.o src/vk_surface.o src/gesture_client.o \
-        src/gesture_parse.o \
+        src/gesture_parse.o src/scene.o \
         src/capture.o src/capture_xshm.o src/config.o src/capture_portal.o src/telemetry.o
 
 spatial-screens: $(OBJS)
