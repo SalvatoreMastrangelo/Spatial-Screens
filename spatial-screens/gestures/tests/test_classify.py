@@ -3,7 +3,7 @@ import pytest
 from classify import (
     INDEX_PIP, INDEX_TIP, MIDDLE_MCP, MIDDLE_PIP, MIDDLE_TIP,
     PINKY_PIP, PINKY_TIP, RING_PIP, RING_TIP, THUMB_TIP, WRIST,
-    classify_pose, pinch_norm, pinch_pos,
+    classify_pose, pinch_norm, pinch_pos, select_hand,
 )
 
 
@@ -93,3 +93,26 @@ def test_pinch_norm_large_when_fingers_apart():
 def test_pinch_pos_is_midpoint_of_tips():
     lm = make_landmarks({THUMB_TIP: (0.2, 0.4), INDEX_TIP: (0.4, 0.6)})
     assert pinch_pos(lm) == pytest.approx((0.3, 0.5))
+
+
+_LMA = [(0.1, 0.1)] * 21
+_LMB = [(0.9, 0.9)] * 21
+
+
+def test_select_hand_no_mirror():
+    hands = [("Left", _LMA), ("Right", _LMB)]
+    assert select_hand(hands, "left", mirror=False) is _LMA
+    assert select_hand(hands, "right", mirror=False) is _LMB
+
+
+def test_select_hand_mirror_flips_label():
+    # Forward-facing camera: MediaPipe's "Left" is really the user's right hand.
+    hands = [("Left", _LMA), ("Right", _LMB)]
+    assert select_hand(hands, "right", mirror=True) is _LMA
+    assert select_hand(hands, "left", mirror=True) is _LMB
+
+
+def test_select_hand_absent_returns_none():
+    hands = [("Left", _LMA)]
+    assert select_hand(hands, "right", mirror=False) is None  # only Left present
+    assert select_hand([], "left", mirror=False) is None

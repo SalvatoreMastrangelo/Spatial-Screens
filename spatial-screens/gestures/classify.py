@@ -7,6 +7,11 @@ standard MediaPipe Hands landmark layout.
 """
 import math
 
+# MediaPipe reports handedness assuming a mirrored (selfie) image; the Luma's
+# tracking cameras face forward, so the Left/Right labels are inverted relative
+# to the user's actual hands. Flip them here. Pinned during the hardware pass.
+MIRROR_HANDEDNESS = True
+
 WRIST = 0
 THUMB_TIP = 4
 INDEX_MCP = 5
@@ -62,3 +67,16 @@ def classify_pose(landmarks):
     if not curled[0] and all(curled[1:]):
         return "point"
     return "none"
+
+
+def select_hand(hands, target, mirror=MIRROR_HANDEDNESS):
+    """Pick the user's `target` ('left'/'right') hand from one frame's
+    detections. `hands` is a list of (handedness_label, landmarks) tuples.
+    Returns the matching landmarks, or None if that hand isn't in this frame."""
+    for label, landmarks in hands:
+        user_label = label.lower()
+        if mirror:
+            user_label = "right" if user_label == "left" else "left"
+        if user_label == target:
+            return landmarks
+    return None
