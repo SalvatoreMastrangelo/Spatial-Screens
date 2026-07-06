@@ -15,7 +15,6 @@ import sys
 import time
 import urllib.request
 
-from classify import classify_pose, pinch_norm, pinch_pos
 from protocol import encode_event, read_frame
 
 FORMAT_GRAY8 = 0
@@ -84,7 +83,7 @@ def make_reader(sock):
 
 
 def _no_hand_event(timestamp):
-    return encode_event(timestamp, False, "", [(0.0, 0.0)] * 21, 999.0, (0.0, 0.0), "none")
+    return encode_event(timestamp, None, None)
 
 
 def run_echo(sock, read_exact):
@@ -93,9 +92,10 @@ def run_echo(sock, read_exact):
         frame = read_frame(read_exact)
         if frame is None:
             break
-        timestamp, width, height, fmt, _data = frame
+        timestamp, width, height, fmt, planes = frame
         frame_count += 1
-        print(f"echo: frame {frame_count} {width}x{height} fmt={fmt}", file=sys.stderr)
+        print(f"echo: frame {frame_count} {width}x{height} fmt={fmt} "
+              f"planes={len(planes)}", file=sys.stderr)
         sock.sendall(_no_hand_event(timestamp))
 
 
@@ -107,7 +107,11 @@ def _landmarks_to_pairs(hand_landmarks):
 
 
 def build_landmarker():
-    """Import mediapipe and construct the HandLandmarker.
+    """Import mediapipe and construct one HandLandmarker (up to two hands).
+
+    main() builds two independent instances of this — one per camera plane
+    (left/right) — since VIDEO running-mode is stateful per stream and each
+    needs its own monotonic timestamp counter.
 
     Deliberately called *before* connect() (see main()): on real hardware,
     `import mediapipe` plus model load takes ~0.5s (mostly import time), and
@@ -130,7 +134,7 @@ def build_landmarker():
         vision.HandLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=_ensure_model()),
             running_mode=vision.RunningMode.VIDEO,
-            num_hands=1,
+            num_hands=2,
             min_hand_detection_confidence=0.5,
             min_hand_presence_confidence=0.5,
             min_tracking_confidence=0.5,
@@ -138,42 +142,61 @@ def build_landmarker():
     )
 
 
-def run_inference(sock, read_exact, landmarker):
+def run_inference(sock, read_exact, landmarker_left, landmarker_right):
     import cv2
     import mediapipe as mp
     import numpy as np
+    from classify import classify_pose, pinch_norm, pinch_pos, select_hand
 
-    last_ts_ms = -1
+    def detect(landmarker, plane, width, height, ts_ms):
+        gray = np.frombuffer(plane, dtype=np.uint8).reshape(height, width)
+        rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        result = landmarker.detect_for_video(mp_image, ts_ms)
+        return [
+            (result.handedness[i][0].category_name, _landmarks_to_pairs(lm))
+            for i, lm in enumerate(result.hand_landmarks)
+        ]
+
+    def hand_dict(lm, handedness):
+        return {
+            "present": True,
+            "handedness": handedness,
+            "pinch_norm": pinch_norm(lm),
+            "pinch_pos": pinch_pos(lm),
+            "pose": classify_pose(lm),
+            "landmarks": lm,
+        }
+
+    last_ts_l, last_ts_r = -1, -1
     while True:
         frame = read_frame(read_exact)
         if frame is None:
             break
-        timestamp, width, height, fmt, data = frame
+        timestamp, width, height, fmt, planes = frame
 
-        if fmt != FORMAT_GRAY8:
-            print(f"hand_tracker: unexpected format {fmt}, skipping frame", file=sys.stderr)
+        if fmt != FORMAT_GRAY8 or len(planes) < 1:
+            print(f"hand_tracker: unexpected format {fmt}/{len(planes)} planes, "
+                  f"skipping", file=sys.stderr)
             continue
 
-        gray = np.frombuffer(data, dtype=np.uint8).reshape(height, width)
-        rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        # detect_for_video needs strictly-increasing per-stream timestamps.
+        ts_l = max(int(timestamp * 1000), last_ts_l + 1)
+        last_ts_l = ts_l
+        left_hands = detect(landmarker_left, planes[0], width, height, ts_l)
 
-        # detect_for_video requires strictly increasing timestamps; guard
-        # against the source timestamp repeating or going backwards.
-        ts_ms = max(int(timestamp * 1000), last_ts_ms + 1)
-        last_ts_ms = ts_ms
-        result = landmarker.detect_for_video(mp_image, ts_ms)
+        # Right camera plane if present, else fall back to the left plane so a
+        # single-plane sender still yields both hands (num_hands=2 sees both).
+        right_plane = planes[1] if len(planes) > 1 else planes[0]
+        ts_r = max(int(timestamp * 1000), last_ts_r + 1)
+        last_ts_r = ts_r
+        right_hands = detect(landmarker_right, right_plane, width, height, ts_r)
 
-        if result.hand_landmarks:
-            lm = _landmarks_to_pairs(result.hand_landmarks[0])
-            handedness = result.handedness[0][0].category_name.lower()
-            event = encode_event(
-                timestamp, True, handedness, lm,
-                pinch_norm(lm), pinch_pos(lm), classify_pose(lm),
-            )
-        else:
-            event = _no_hand_event(timestamp)
-        sock.sendall(event)
+        left_lm = select_hand(left_hands, "left")
+        right_lm = select_hand(right_hands, "right")
+        left = hand_dict(left_lm, "left") if left_lm is not None else None
+        right = hand_dict(right_lm, "right") if right_lm is not None else None
+        sock.sendall(encode_event(timestamp, left, right))
 
 
 def main():
@@ -183,9 +206,11 @@ def main():
                          help="skip MediaPipe; just acknowledge frames (IPC smoke test)")
     args = parser.parse_args()
 
-    # Build the (slow-to-import/load) landmarker before connecting — see
-    # build_landmarker()'s docstring for why ordering matters here.
-    landmarker = None if args.echo else build_landmarker()
+    # Build the (slow-to-import/load) landmarkers before connecting — see
+    # build_landmarker()'s docstring for why ordering matters. Two independent
+    # VIDEO streams (left + right camera) each need their own stateful instance.
+    landmarker_left = None if args.echo else build_landmarker()
+    landmarker_right = None if args.echo else build_landmarker()
 
     sock = connect(args.socket)
     read_exact = make_reader(sock)
@@ -193,7 +218,7 @@ def main():
     if args.echo:
         run_echo(sock, read_exact)
     else:
-        run_inference(sock, read_exact, landmarker)
+        run_inference(sock, read_exact, landmarker_left, landmarker_right)
 
 
 if __name__ == "__main__":
