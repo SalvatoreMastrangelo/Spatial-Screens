@@ -622,6 +622,20 @@ int main(int argc, char** argv) {
         anchored = true;
     };
 
+    int active_screen = -1;              // -1 = none (rack-global); else scene idx
+
+    // Scale the active screen's override distance from the rack origin by `f`,
+    // clamped to a comfortable range. No-op if nothing is selected.
+    auto scale_active_distance = [&](float f) {
+        if (active_screen < 0) return;
+        Vec3& pp = scene[active_screen].cfg.pose_pos;
+        float len = std::sqrt(pp.x * pp.x + pp.y * pp.y + pp.z * pp.z);
+        if (len < 1e-6f) return;
+        float nlen = std::clamp(len * f, 0.25f, 10.f);
+        float s = nlen / len;
+        pp.x *= s; pp.y *= s; pp.z *= s;
+    };
+
     auto now_s = [] {
         using namespace std::chrono;
         return duration<double>(steady_clock::now().time_since_epoch()).count();
@@ -648,7 +662,6 @@ int main(int argc, char** argv) {
     float pinch_prev_y[2] = {0.f, 0.f};
     double fist_start_s[2] = {-1.0, -1.0};
     bool fist_triggered[2] = {false, false};
-    int active_screen = -1;              // -1 = none (rack-global); else scene idx
     bool was_two_up[2] = {false, false}; // rising-edge latch per hand for select
     // Two-hand grab (resize + reposition).
     GrabState grab;
@@ -689,21 +702,27 @@ int main(int argc, char** argv) {
                 tele.log("info", "recentered");
             }
             else if (ks == XK_bracketleft) {
-                if (multi) rack_dist_scale = std::max(0.25f, rack_dist_scale * 0.9f);
+                if (active_screen >= 0) scale_active_distance(0.9f);
+                else if (multi) rack_dist_scale = std::max(0.25f, rack_dist_scale * 0.9f);
                 else { distance = std::max(0.5f, distance - 0.25f); scene[0].cfg.distance = distance; }
                 place_rack();
             }
             else if (ks == XK_bracketright) {
-                if (multi) rack_dist_scale = std::min(4.f, rack_dist_scale * 1.1f);
+                if (active_screen >= 0) scale_active_distance(1.1f);
+                else if (multi) rack_dist_scale = std::min(4.f, rack_dist_scale * 1.1f);
                 else { distance = std::min(10.f, distance + 0.25f); scene[0].cfg.distance = distance; }
                 place_rack();
             }
             else if (ks == XK_minus) {
-                if (multi) rack_size_scale = std::max(0.4f, rack_size_scale * 0.9f);
+                if (active_screen >= 0)
+                    scene[active_screen].cfg.size = std::max(10.f, scene[active_screen].cfg.size - 10.f);
+                else if (multi) rack_size_scale = std::max(0.4f, rack_size_scale * 0.9f);
                 else { diag_in = std::max(10.f, diag_in - 10.f); scene[0].cfg.size = diag_in; }
             }
             else if (ks == XK_equal) {
-                if (multi) rack_size_scale = std::min(3.f, rack_size_scale * 1.1f);
+                if (active_screen >= 0)
+                    scene[active_screen].cfg.size = std::min(400.f, scene[active_screen].cfg.size + 10.f);
+                else if (multi) rack_size_scale = std::min(3.f, rack_size_scale * 1.1f);
                 else { diag_in = std::min(400.f, diag_in + 10.f); scene[0].cfg.size = diag_in; }
             }
         }
@@ -763,9 +782,18 @@ int main(int argc, char** argv) {
             if (!grab.active) {
                 Vec3 rr = qrot(rack_q, { 1, 0, 0 });
                 Vec3 uu = qrot(rack_q, { 0, 1, 0 });
+                float size0 = diag_in;
+                Vec3 anchor0 = { rack_p.x, rack_p.y, rack_p.z };
+                if (active_screen >= 0) {
+                    Quat sq; Vec3 sp;
+                    scene_screen_pose(scene[active_screen], rack_q, rack_p,
+                                      rack_dist_scale, sq, sp);
+                    anchor0 = sp;
+                    size0 = scene[active_screen].cfg.size;
+                }
                 grab = grab_begin(gev.left.pinch_x, gev.left.pinch_y,
                                   gev.right.pinch_x, gev.right.pinch_y,
-                                  diag_in, { rack_p.x, rack_p.y, rack_p.z },
+                                  size0, { anchor0.x, anchor0.y, anchor0.z },
                                   { rr.x, rr.y, rr.z }, { uu.x, uu.y, uu.z });
                 grab_scale0 = rack_size_scale;   // baseline for rack-mode resize
             } else {
@@ -773,17 +801,23 @@ int main(int argc, char** argv) {
                                             gev.right.pinch_x, gev.right.pinch_y,
                                             distance, GRAB_REPOSITION_GAIN,
                                             GRAB_DIAG_MIN, GRAB_DIAG_MAX);
-                // Reposition: move the rack origin in its own right/up plane.
-                rack_p = { gr.anchor.x, gr.anchor.y, gr.anchor.z };
-                // Resize: single screen -> diagonal inches (mirror to scene[0]);
-                // multi-screen rack -> a uniform size scale. grab.size0 is the
-                // diag_in snapshot, so gr.diag/size0 is the spread ratio.
-                if (multi) {
-                    float ratio = gr.diag / std::max(1e-3f, grab.size0);
-                    rack_size_scale = std::clamp(grab_scale0 * ratio, 0.4f, 3.f);
+                if (active_screen >= 0) {
+                    // Reposition + resize the ONE active screen (override world pose).
+                    Vec3 d = { gr.anchor.x - rack_p.x, gr.anchor.y - rack_p.y,
+                               gr.anchor.z - rack_p.z };
+                    scene[active_screen].cfg.pose_pos = qrot(qconj(rack_q), d);
+                    scene[active_screen].cfg.has_pose_override = true;  // already true; explicit
+                    scene[active_screen].cfg.size = gr.diag;
                 } else {
-                    diag_in = gr.diag;
-                    scene[0].cfg.size = diag_in;
+                    // Reposition: move the rack origin in its own right/up plane.
+                    rack_p = { gr.anchor.x, gr.anchor.y, gr.anchor.z };
+                    if (multi) {
+                        float ratio = gr.diag / std::max(1e-3f, grab.size0);
+                        rack_size_scale = std::clamp(grab_scale0 * ratio, 0.4f, 3.f);
+                    } else {
+                        diag_in = gr.diag;
+                        scene[0].cfg.size = diag_in;
+                    }
                 }
             }
             // Suppress single-hand logic and reset its per-hand run-state so it
@@ -854,7 +888,9 @@ int main(int argc, char** argv) {
                     fist_triggered[i] = false;
                     if (was_pinching[i]) {
                         float dy = h.pinch_y - pinch_prev_y[i]; // image space: +y down
-                        if (multi) {
+                        if (active_screen >= 0) {
+                            scale_active_distance(1.f - dy * PINCH_DISTANCE_SENSITIVITY * 0.5f);
+                        } else if (multi) {
                             rack_dist_scale = std::clamp(
                                 rack_dist_scale * (1.f - dy * PINCH_DISTANCE_SENSITIVITY * 0.5f),
                                 0.25f, 4.f);
