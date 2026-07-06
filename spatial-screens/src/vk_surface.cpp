@@ -40,6 +40,22 @@ std::vector<OutputRect> list_outputs(Display* dpy) {
     return out;
 }
 
+std::vector<OutputRect> list_monitors(Display* dpy) {
+    std::vector<OutputRect> out;
+    Window root = DefaultRootWindow(dpy);
+    int n = 0;
+    XRRMonitorInfo* mi = XRRGetMonitors(dpy, root, True, &n);
+    if (!mi) return out;
+    for (int i = 0; i < n; i++) {
+        char* name = XGetAtomName(dpy, mi[i].name);
+        out.push_back({ name ? name : "", 0, mi[i].x, mi[i].y,
+                        mi[i].width, mi[i].height });
+        if (name) XFree(name);
+    }
+    XRRFreeMonitors(mi);
+    return out;
+}
+
 // ------------------------------------------------------------- direct ----
 
 // Saved RandR state for restore; single-output app, so a file-static is fine.

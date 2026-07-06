@@ -55,6 +55,7 @@
 #include "config.h"
 #include "telemetry.h"
 #include "sbs_mode.h"
+#include "scene.h"
 
 // -------------------------------------------------------- cursor overlay ----
 // Neither capture path delivers the pointer (mutter on X11 ignores the
@@ -443,18 +444,62 @@ int main(int argc, char** argv) {
         }
     }
 
-    // -- capture backend chain: auto = portal -> xshm -> test; explicit backend -> test
+    // The lease just reflowed the desktop and RandR events weren't selected
+    // yet — re-snapshot so both the scene's monitor matching and cursor
+    // mapping start from live geometry.
+    outputs = list_outputs(dpy);
+
+    // Capture source rect = what the xshm backend grabs (the whole capture
+    // output). UVs slice it; test/portal frames are sliced the same way.
+    OutputRect cap_src{};
+    for (auto& oo : outputs)
+        if (!capture_name.empty() ? oo.name == capture_name
+                                  : oo.name != glasses.name) { cap_src = oo; break; }
+    MonRect fb_rect{cap_src.name, cap_src.x, cap_src.y, cap_src.w, cap_src.h};
+
+    std::vector<MonRect> vs_mons;
+    for (auto& m : list_monitors(dpy)) {
+        bool inside = m.x >= cap_src.x && m.y >= cap_src.y &&
+                      m.x + m.w <= cap_src.x + cap_src.w &&
+                      m.y + m.h <= cap_src.y + cap_src.h;
+        if (m.name.rfind("VS", 0) == 0 && inside)
+            vs_mons.push_back({m.name, m.x, m.y, m.w, m.h});
+    }
+    std::vector<ScreenInst> scene;
+    if (!o.screens.empty() || vs_mons.size() > 1) {
+        scene = scene_build(o.screens, vs_mons, fb_rect);
+        if (scene.empty())
+            fprintf(stderr, "scene: no configured screen matched a monitor — "
+                            "falling back to single screen\n");
+    }
+    bool multi = scene.size() > 1;
+    if (scene.empty()) {
+        // Single screen, full frame: reproduces pre-multi behavior exactly.
+        ScreenInst s;
+        s.cfg.distance = distance;
+        s.cfg.size = diag_in;
+        scene.push_back(s);
+    }
+    printf("scene: %zu screen(s)%s\n", scene.size(), multi ? " (rack)" : "");
+    float rack_dist_scale = multi && app_state.rack_distance_scale > 0
+                                ? app_state.rack_distance_scale : 1.f;
+    float rack_size_scale = multi && app_state.rack_size_scale > 0
+                                ? app_state.rack_size_scale : 1.f;
+
+    // -- capture backend chain: auto = portal -> xshm -> test; explicit
+    // backend -> test. Multi-screen forces xshm — portal delivers one picked
+    // stream and can't feed N uv rects.
     std::vector<std::string> chain;
-    if (capture_backend == "auto") chain = { "portal", "xshm", "test" };
+    if (capture_backend == "auto") {
+        if (multi) chain = { "xshm", "test" };  // portal can't feed N uv rects
+        else chain = { "portal", "xshm", "test" };
+    }
     else if (capture_backend != "test") chain = { capture_backend, "test" };
     else chain = { "test" };
     size_t chain_pos = 0;
     std::unique_ptr<CaptureBackend> cap;
     float cap_aspect = 16.f / 9.f;
     CursorUnder cursor_under;
-    // The lease just reflowed the desktop and RandR events weren't selected
-    // yet — re-snapshot so cursor mapping starts from live geometry.
-    outputs = list_outputs(dpy);
     auto switch_backend = [&]() {
         while (chain_pos < chain.size()) {
             const std::string& kind = chain[chain_pos++];
@@ -544,15 +589,16 @@ int main(int argc, char** argv) {
     Quat head_q; Vec3 head_p;
     Quat ori_offset;              // yaw recenter
     Quat trim = quat_axis_angle(1, 0, 0, pitch_trim);
-    Quat anchor_q; Vec3 anchor_p; // virtual screen pose
+    Quat rack_q; Vec3 rack_p;     // rack origin pose (all screens hang off it)
     bool anchored = false;
 
-    auto place_screen = [&]() {
+    auto place_rack = [&]() {
         Quat basis = yaw_twist(qmul(qconj(ori_offset), head_q));
-        anchor_q = basis;
-        Vec3 fwd = qrot(basis, { 0, 0, -1 });
-        Vec3 hp = qrot(qconj(ori_offset), head_p);
-        anchor_p = { hp.x + fwd.x * distance, hp.y + fwd.y * distance, hp.z + fwd.z * distance };
+        rack_q = basis;
+        // Rack origin AT the head; each screen walks out by its own distance
+        // in scene_screen_pose — for a single screen this reproduces the old
+        // place_screen geometry (head + fwd * distance) exactly.
+        rack_p = qrot(qconj(ori_offset), head_p);
         anchored = true;
     };
 
@@ -609,15 +655,29 @@ int main(int argc, char** argv) {
                     recenter_at = now_s() + 0.5;
                 } else {
                     ori_offset = yaw_twist(head_q);
-                    place_screen();
+                    place_rack();
                 }
                 printf("recentered%s\n", shift ? " + VIO reset" : "");
                 tele.log("info", "recentered");
             }
-            else if (ks == XK_bracketleft)  { distance = std::max(0.5f, distance - 0.25f); place_screen(); }
-            else if (ks == XK_bracketright) { distance = std::min(10.f, distance + 0.25f); place_screen(); }
-            else if (ks == XK_minus) diag_in = std::max(10.f, diag_in - 10.f);
-            else if (ks == XK_equal) diag_in = std::min(400.f, diag_in + 10.f);
+            else if (ks == XK_bracketleft) {
+                if (multi) rack_dist_scale = std::max(0.25f, rack_dist_scale * 0.9f);
+                else { distance = std::max(0.5f, distance - 0.25f); scene[0].cfg.distance = distance; }
+                place_rack();
+            }
+            else if (ks == XK_bracketright) {
+                if (multi) rack_dist_scale = std::min(4.f, rack_dist_scale * 1.1f);
+                else { distance = std::min(10.f, distance + 0.25f); scene[0].cfg.distance = distance; }
+                place_rack();
+            }
+            else if (ks == XK_minus) {
+                if (multi) rack_size_scale = std::max(0.4f, rack_size_scale * 0.9f);
+                else { diag_in = std::max(10.f, diag_in - 10.f); scene[0].cfg.size = diag_in; }
+            }
+            else if (ks == XK_equal) {
+                if (multi) rack_size_scale = std::min(3.f, rack_size_scale * 1.1f);
+                else { diag_in = std::min(400.f, diag_in + 10.f); scene[0].cfg.size = diag_in; }
+            }
         }
         if (!g_running) break;
 
@@ -663,7 +723,7 @@ int main(int argc, char** argv) {
             if (fist_start_s < 0) { fist_start_s = now_s(); fist_triggered = false; }
             else if (!fist_triggered && now_s() - fist_start_s > FIST_HOLD_SECONDS) {
                 ori_offset = yaw_twist(head_q);
-                place_screen();
+                place_rack();
                 printf("gesture recenter (fist-hold)\n");
                 tele.log("info", "recentered");
                 fist_triggered = true;
@@ -675,17 +735,16 @@ int main(int argc, char** argv) {
             fist_triggered = false;
             if (was_pinching) {
                 float dy = gev.pinch_y - pinch_prev_y; // image space: +y down
-                float old_distance = distance;
-                distance = std::clamp(distance - dy * PINCH_DISTANCE_SENSITIVITY, 0.5f, 10.f);
-                // Slide the anchor along its existing fixed forward axis rather
-                // than calling place_screen() (which would re-derive anchor_q/p
-                // from the live head pose and re-center every frame). anchor_q
-                // stays exactly as set by the last real placement.
-                Vec3 fwd = qrot(anchor_q, { 0, 0, -1 });
-                float ddist = distance - old_distance;
-                anchor_p.x += fwd.x * ddist;
-                anchor_p.y += fwd.y * ddist;
-                anchor_p.z += fwd.z * ddist;
+                if (multi) {
+                    rack_dist_scale = std::clamp(
+                        rack_dist_scale * (1.f - dy * PINCH_DISTANCE_SENSITIVITY * 0.5f),
+                        0.25f, 4.f);
+                } else {
+                    float old_distance = distance;
+                    distance = std::clamp(distance - dy * PINCH_DISTANCE_SENSITIVITY, 0.5f, 10.f);
+                    scene[0].cfg.distance = distance;
+                    (void)old_distance;
+                }
             }
             pinch_prev_y = gev.pinch_y;
             was_pinching = true;
@@ -707,7 +766,7 @@ int main(int argc, char** argv) {
                 head_q = rq;
                 have_pose = true;
                 ori_offset = yaw_twist(head_q);
-                place_screen();
+                place_rack();
             } else {
                 // One-Euro position filter: the cutoff follows a SMOOTHED
                 // speed estimate, so mm-level VIO noise spikes cannot open
@@ -820,7 +879,7 @@ int main(int argc, char** argv) {
         }
 
         // ---- render
-        QuadDraw draws[32];
+        QuadDraw draws[40];
         int ndraw = 0;
         if (have_pose && anchored) {
             // view = trim ⊗ inverse(recentered head pose)
@@ -828,28 +887,32 @@ int main(int argc, char** argv) {
             Vec3 hp = qrot(qconj(ori_offset), head_p);
             Quat view_q = qconj(qmul(head_rc, trim));
             Vec3 hp_neg = qrot(view_q, { -hp.x, -hp.y, -hp.z });
-            float view[16], model[16], vm[16], proj[16], mvp[16];
+            float view[16], proj[16];
             mat_from_pose(view_q, hp_neg, view);
-            mat_from_pose(anchor_q, anchor_p, model);
-            mat_mul(view, model, vm);
             mat_projection_vk(r, t, near_z, far_z, proj);
-            mat_mul(proj, vm, mvp);
 
-            // quad dimensions from diagonal size + capture aspect
-            float diag_m = diag_in * 0.0254f;
-            float w2 = diag_m * cap_aspect / std::sqrt(1 + cap_aspect * cap_aspect) * 0.5f;
-            float h2 = diag_m / std::sqrt(1 + cap_aspect * cap_aspect) * 0.5f;
-
-            auto quad = [&](float cx, float cy, float hw, float hh,
-                            const float* col, bool textured) {
-                QuadDraw& d = draws[ndraw++];
-                memcpy(d.mvp, mvp, sizeof(mvp));
-                memcpy(d.color, col, 4 * sizeof(float));
-                d.rect[0] = cx; d.rect[1] = cy; d.rect[2] = hw; d.rect[3] = hh;
-                d.textured = textured;
-            };
             const float white[4] = { 1, 1, 1, 1 };
-            quad(0, 0, w2, h2, white, true);
+            for (auto& s : scene) {
+                Quat sq; Vec3 sp;
+                scene_screen_pose(s, rack_q, rack_p, rack_dist_scale, sq, sp);
+                float model[16], vm[16], smvp[16];
+                mat_from_pose(sq, sp, model);
+                mat_mul(view, model, vm);
+                mat_mul(proj, vm, smvp);
+                float aspect = multi ? s.aspect : cap_aspect;
+                float diag_m = s.cfg.size * (multi ? rack_size_scale : 1.f) * 0.0254f;
+                float w2 = diag_m * aspect / std::sqrt(1 + aspect * aspect) * 0.5f;
+                float h2 = diag_m / std::sqrt(1 + aspect * aspect) * 0.5f;
+                QuadDraw& d = draws[ndraw++];
+                memcpy(d.mvp, smvp, sizeof(smvp));
+                memcpy(d.color, white, 4 * sizeof(float));
+                d.rect[0] = 0; d.rect[1] = 0; d.rect[2] = w2; d.rect[3] = h2;
+                memcpy(d.uv, s.uv, sizeof(s.uv));
+                d.textured = true;
+            }
+            // `mvp` below (HUD blocks) previously reused the screen's matrix
+            // chain; the HUD only ever used proj-based matrices, which are
+            // built inline there already — no change needed.
 
             // Head-locked tracking-status dot (replaced the old border
             // frame): blue = 6DoF live, orange = positional tracking frozen
@@ -919,7 +982,7 @@ int main(int argc, char** argv) {
                 // (open palm) makes it opaque. Fingertips go green only when the
                 // pinch is actually actionable (armed && pinching).
                 const float ov_alpha = gestures_armed ? 1.f : 0.45f;
-                for (int i = 0; i < 21 && ndraw < 32; i++) {
+                for (int i = 0; i < 21 && ndraw < 40; i++) {
                     float nx = gev.landmarks[i][0];
                     float ny = gev.landmarks[i][1];
                     // Normalized image coords -> panel-local. Image y is down,
@@ -986,8 +1049,13 @@ int main(int argc, char** argv) {
                       cap ? cap->name() : "none", sout.direct, rss_mb);
     }
 
-    app_state.distance = distance;
-    app_state.size = diag_in;
+    if (multi) {
+        app_state.rack_distance_scale = rack_dist_scale;
+        app_state.rack_size_scale = rack_size_scale;
+    } else {
+        app_state.distance = distance;
+        app_state.size = diag_in;
+    }
     save_state(app_state);
     printf("shutting down…\n");
     g_gestures.stop();
