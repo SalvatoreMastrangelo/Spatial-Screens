@@ -100,6 +100,43 @@ this was surfaced) and the stereo-3d renderer.
 - [ ] Decide final default (keep fusion-on vs revert to opt-in) + update
       design/plan/roadmap wording; then merge to `main`.
 
+## Next session — running the hardware pass (cold-start runbook)
+
+Everything below runs from THIS worktree
+(`.claude/worktrees/camera-fusion`, branch `feat/camera-fusion`). Fusion is now
+default-ON — a plain launch exercises the 2×-inference path.
+
+1. **Build** (later commits may post-date the checked-in binary):
+   `cd spatial-screens && make` (and `make test` should stay green).
+2. **Free the SDK** — it's single-client. Stop `viture-bridge` and any other
+   spatial-screens/bridge process (incl. a parallel `feat/screen-selection`
+   session if one is holding the glasses) before launching. Per
+   [[hardware-test-division-of-labor]]: on the user's "go", Claude runs all of
+   this end-to-end; the user only gives eyes-on-glasses feedback.
+3. **Launch (fusion default-ON):** `./run.sh`  →  fallback/compare:
+   `./run.sh --no-fusion` (run.sh forwards args). If the 2×-inference send
+   backs up and the sidecar trips the 200 ms deadline, gestures get disabled
+   mid-session — relaunch with `--no-fusion` to recover the single-inference
+   path.
+4. **Dashboard (depth numbers):** `cd sensor-viz && npm run dev`, open the URL,
+   it connects to `ws://127.0.0.1:8765`; the new **hands card** shows L/R depth
+   in meters (`—` when no fused depth).
+5. **Observe / the go-no-go:**
+   - Depth monotonic near/far (dashboard) + HUD per-hand dot shrinks with
+     distance (hand at ~30/50/70 cm).
+   - **fps holds with BOTH hands present** — the real risk (drain bounds
+     backlog, not per-cycle inference time). If fps collapses with two hands,
+     the documented fallback is "send off the render mutex" (design
+     §Real-time strategy); do NOT ship default-on until this passes.
+   - `--no-fusion` cleanly restores today's behavior (no depth, un-scaled dots).
+6. **Environment gotchas** (from memory): inhibit idle blanking during the
+   session — [[nvidia-dpms-hang-2026-07-04]] (NVIDIA idle-blank driver hang, not
+   ours). A direct-mode crash wedges `DP-1` at `non-desktop=1` — recover with
+   `xrandr --output DP-1 --set non-desktop 0 --auto` or replug.
+7. **After the pass:** record the verdict here, decide keep-default-on vs
+   revert-to-opt-in, update design/plan/roadmap wording to match, then merge to
+   `main` (use `superpowers:finishing-a-development-branch`).
+
 ## Files (planned — see design §Files touched)
 
 New: `spatial-screens/gestures/stereo.py`, `tests/test_stereo.py`,
