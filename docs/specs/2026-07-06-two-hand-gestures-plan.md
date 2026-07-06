@@ -1026,10 +1026,10 @@ git commit -m "spatial-screens: per-hand arming + two-hand resize/reposition gra
 
 ### Task 9: Two-hand overlay + remove legacy fields
 
-Draw both hands in the HUD (per-hand alpha/green), raise the draw cap, and drop the now-unused legacy primary-hand fields from `GestureEvent`.
+Draw both hands in the HUD (per-hand alpha/green), give each hand its own status dot (left→bottom-left, right→bottom-right) and move the VO/6DoF tracking dot to bottom-center, raise the draw cap, and drop the now-unused legacy primary-hand fields from `GestureEvent`.
 
 **Files:**
-- Modify: `spatial-screens/src/main.cpp` (overlay block ~939-976; confirm `draws[]` capacity)
+- Modify: `spatial-screens/src/main.cpp` (status-dot block ~888-933; overlay block ~939-976; confirm `draws[]` capacity)
 - Modify: `spatial-screens/src/gesture_client.h` (remove legacy fields)
 - Modify: `spatial-screens/src/gesture_parse.cpp` (stop populating legacy fields)
 
@@ -1090,7 +1090,42 @@ If the `draws[]` array is sized < 48 (two hands = 42 landmark dots + screen/curs
             }
 ```
 
-If the pinch-status dot block just above (lines ~907-931, the one that sets `pd.circle = true`) references the legacy `gev.pinching`/`gev.present`, update it to reflect either hand: use `bool any_present = gev.left.present || gev.right.present;` and `bool any_pinch_armed = (armed[0] && gev.left.pinching) || (armed[1] && gev.right.pinching);` in place of the single-hand `gev.present` / `gestures_armed && gev.pinching`. (Confirm and adapt that block at implementation — it is the grey/amber/blue/green status dot.)
+- [ ] **Step 2b: Per-hand status dots + center the VO dot** — in the head-locked status-dot block (currently ~lines 888-933 of `main.cpp`: the block with `live`/`frozen` colors + the `sixdof_live` tracking dot, then the `if (g_gestures.enabled())` pinch-status dot). Two changes:
+
+  **(a) Move the VO/6DoF tracking-status dot to bottom-center.** In its `eye[16]` translation, change the x term from `0.95f * tan_r * DOT_Z` to `0.0f` (keep y at `-0.95f * tan_t * DOT_Z`). Update its comment ("lower-right"/"lower-right of the view" → "bottom-center").
+
+  **(b) Replace the single pinch/arm-status dot with one per hand** — left hand → bottom-left, right hand → bottom-right, each colored by THAT hand's own state, using `gev.left`/`gev.right` and the per-hand `armed[2]` from Task 8. Replace the entire `if (g_gestures.enabled()) { ... }` pinch-dot block with:
+
+```cpp
+            // Per-hand pinch/arm-status dots: one per hand at the bottom
+            // corners (left hand -> bottom-left, right hand -> bottom-right),
+            // flanking the centered VO dot. Shown only while the gesture
+            // pipeline is live. Per-hand states: grey = hand not seen, amber =
+            // seen but not armed, blue = armed (open palm), green = armed+pinch.
+            if (g_gestures.enabled()) {
+                const float grey[4]  = { 0.5f, 0.5f, 0.5f, 1.f };
+                const float amber[4] = { 1.f, 0.65f, 0.1f, 1.f };
+                const float blue[4]  = { 0.30f, 0.55f, 1.f, 1.f };
+                const HandState* hstate[2] = { &gev.left, &gev.right };
+                const float hxf[2] = { -0.95f, 0.95f };  // left dot left, right dot right
+                for (int i = 0; i < 2; i++) {
+                    const HandState& h = *hstate[i];
+                    const float* pcol = !h.present ? grey
+                                      : !armed[i]  ? amber
+                                      : (h.pinching ? status_green : blue);
+                    float peye[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
+                                       hxf[i] * tan_r * DOT_Z, -0.95f * tan_t * DOT_Z, -DOT_Z, 1 };
+                    QuadDraw& pd = draws[ndraw++];
+                    mat_mul(proj, peye, pd.mvp);
+                    memcpy(pd.color, pcol, 4 * sizeof(float));
+                    pd.rect[0] = 0; pd.rect[1] = 0; pd.rect[2] = dot_r; pd.rect[3] = dot_r;
+                    pd.textured = false;
+                    pd.circle = true;
+                }
+            }
+```
+
+  `status_green` is declared just above this block; `dot_r`/`tan_r`/`tan_t`/`DOT_Z` are already in scope; `armed[2]` comes from Task 8. Net effect: three dots across the bottom — left-hand status (bottom-left), VO/6DoF tracking (bottom-center), right-hand status (bottom-right).
 
 - [ ] **Step 3: Remove the legacy fields** — in `src/gesture_client.h`, delete the "legacy single-hand view" fields from `GestureEvent`, leaving:
 
