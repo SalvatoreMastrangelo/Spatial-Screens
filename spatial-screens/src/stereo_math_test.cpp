@@ -152,6 +152,43 @@ static void test_scene_pose() {
           std::fabs(p.z) < 1e-5f);
 }
 
+static void test_pose_override() {
+    MonRect fb{"eDP-1", 0, 0, 1920, 1200};
+    std::vector<MonRect> mons = {{"VS1", 0, 0, 1920, 1200}};
+    std::vector<ScreenCfg> cfg(1); cfg[0].monitor = "VS1";
+    auto s = scene_build(cfg, mons, fb);
+
+    // A non-trivial rack (yaw 30°, translated) and an arbitrary world pose.
+    Quat rack_q = quat_axis_angle(0, 1, 0, 30.f);
+    Vec3 rack_p{1.f, 2.f, 3.f};
+    Quat world_q = quat_axis_angle(0, 1, 0, 90.f);
+    Vec3 world_p{4.f, 5.f, 6.f};
+
+    // world_to_rack_frame then scene_screen_pose must round-trip to the world
+    // pose, and dist_scale must be IGNORED once the override is set.
+    world_to_rack_frame(rack_q, rack_p, world_q, world_p,
+                        s[0].cfg.pose_ori, s[0].cfg.pose_pos);
+    s[0].cfg.has_pose_override = true;
+
+    Quat q; Vec3 p;
+    scene_screen_pose(s[0], rack_q, rack_p, /*dist_scale*/7.f, q, p);  // scale ignored
+    CHECK(std::fabs(p.x - 4.f) < 1e-4f);
+    CHECK(std::fabs(p.y - 5.f) < 1e-4f);
+    CHECK(std::fabs(p.z - 6.f) < 1e-4f);
+    // Orientation round-trips (compare as rotated forward axes to avoid sign).
+    Vec3 f_out = qrot(q, {0, 0, -1});
+    Vec3 f_want = qrot(world_q, {0, 0, -1});
+    CHECK(std::fabs(f_out.x - f_want.x) < 1e-4f &&
+          std::fabs(f_out.y - f_want.y) < 1e-4f &&
+          std::fabs(f_out.z - f_want.z) < 1e-4f);
+
+    // Without the override flag, the az/el/dist formula still runs (regression).
+    s[0].cfg.has_pose_override = false;
+    s[0].cfg.azimuth = 0; s[0].cfg.elevation = 0; s[0].cfg.distance = 1.f;
+    scene_screen_pose(s[0], Quat{}, Vec3{0,0,0}, 1.f, q, p);
+    CHECK(std::fabs(p.z + 1.f) < 1e-4f);  // 1 m straight ahead, formula path
+}
+
 static void test_stereo_math() {
     // Camera shifted +x (right eye) moves world points -x in view space:
     // right eye gets a NEGATIVE view-space offset, left eye positive.
@@ -175,6 +212,7 @@ int main() {
     test_config_keys();
     test_scene_build();
     test_scene_pose();
+    test_pose_override();
     test_stereo_math();
     if (failures == 0) { printf("stereo_math_test: all checks passed\n"); return 0; }
     printf("stereo_math_test: %d failure(s)\n", failures);

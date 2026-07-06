@@ -5,6 +5,7 @@
 #pragma once
 #include <string>
 #include <vector>
+#include "pose_math.h"   // Vec3, Quat for the per-screen pose override
 
 // One virtual screen in the rack (multi-screen stereo). Azimuth: + = to the
 // user's right; elevation: + = up; distance in meters from the rack origin;
@@ -14,6 +15,12 @@ struct ScreenCfg {
     float azimuth = 0.f, elevation = 0.f;
     float distance = 0.75f;
     float size = 24.f;
+    // Free-placement override (set once a gesture selects/moves this screen).
+    // Stored relative to the rack origin so recenter moves it with the rack.
+    // When set, scene_screen_pose ignores azimuth/elevation/distance/dist_scale.
+    bool has_pose_override = false;
+    Vec3 pose_pos;   // world position in the rack frame
+    Quat pose_ori;   // world orientation in the rack frame
 };
 
 struct Options {

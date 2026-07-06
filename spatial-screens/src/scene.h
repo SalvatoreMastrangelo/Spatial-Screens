@@ -29,3 +29,9 @@ std::vector<ScreenInst> scene_build(const std::vector<ScreenCfg>& cfg,
 // the screen faces back along that axis.
 void scene_screen_pose(const ScreenInst& s, const Quat& rack_q, const Vec3& rack_p,
                        float dist_scale, Quat& out_q, Vec3& out_p);
+
+// Inverse of scene_screen_pose's override branch: express a world pose as a
+// rack-relative (pose_ori, pose_pos) so scene_screen_pose reproduces it.
+void world_to_rack_frame(const Quat& rack_q, const Vec3& rack_p,
+                         const Quat& world_q, const Vec3& world_p,
+                         Quat& out_ori, Vec3& out_pos);

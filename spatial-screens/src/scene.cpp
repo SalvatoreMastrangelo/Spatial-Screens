@@ -60,6 +60,12 @@ std::vector<ScreenInst> scene_build(const std::vector<ScreenCfg>& cfg,
 
 void scene_screen_pose(const ScreenInst& s, const Quat& rack_q, const Vec3& rack_p,
                        float dist_scale, Quat& out_q, Vec3& out_p) {
+    if (s.cfg.has_pose_override) {
+        out_q = qmul(rack_q, s.cfg.pose_ori);
+        Vec3 w = qrot(rack_q, s.cfg.pose_pos);
+        out_p = { rack_p.x + w.x, rack_p.y + w.y, rack_p.z + w.z };
+        return;
+    }
     // yaw(-azimuth): +azimuth = user's right = -y rotation in EUS.
     Quat rot = qmul(quat_axis_angle(0, 1, 0, -s.cfg.azimuth),
                     quat_axis_angle(1, 0, 0, s.cfg.elevation));
@@ -67,4 +73,13 @@ void scene_screen_pose(const ScreenInst& s, const Quat& rack_q, const Vec3& rack
     Vec3 fwd = qrot(out_q, {0, 0, -1});
     float d = s.cfg.distance * dist_scale;
     out_p = { rack_p.x + fwd.x * d, rack_p.y + fwd.y * d, rack_p.z + fwd.z * d };
+}
+
+void world_to_rack_frame(const Quat& rack_q, const Vec3& rack_p,
+                         const Quat& world_q, const Vec3& world_p,
+                         Quat& out_ori, Vec3& out_pos) {
+    Quat inv = qconj(rack_q);
+    Vec3 d = { world_p.x - rack_p.x, world_p.y - rack_p.y, world_p.z - rack_p.z };
+    out_pos = qrot(inv, d);
+    out_ori = qmul(inv, world_q);
 }
