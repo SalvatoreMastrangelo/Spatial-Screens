@@ -970,27 +970,29 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // Hand-landmark overlay: both hands, each as 21 dots in a
-            // head-locked lower-left panel, shown only while that hand is seen.
-            // Per-hand alpha follows that hand's armed flag; thumb/index tips
-            // go green when that hand is armed and pinching.
+            // Hand-landmark overlay: each hand as 21 dots in its own
+            // head-locked panel (left hand -> lower-left, right hand ->
+            // lower-right), shown only while that hand is seen. Per-hand
+            // alpha follows that hand's armed flag; thumb/index tips go
+            // green when that hand is armed and pinching.
             if (g_gestures.enabled()) {
                 int cw = g_cam_w.load(std::memory_order_relaxed);
                 int ch = g_cam_h.load(std::memory_order_relaxed);
                 float aspect = (cw > 0 && ch > 0) ? float(cw) / float(ch) : 4.f / 3.f;
                 const float PANEL_H = 0.09f * DOT_Z;        // half-height (~10° tall)
                 const float PANEL_W = PANEL_H * aspect;     // aspect-preserved half-width
-                float leye[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
-                                   -0.55f * tan_r * DOT_Z, -0.45f * tan_t * DOT_Z, -DOT_Z, 1 };
-                float panel_mvp[16];
-                mat_mul(proj, leye, panel_mvp);
                 const float lm_col[4] = { 0.40f, 0.90f, 1.00f, 1.f }; // soft cyan
                 const float tip[4]    = { 1.00f, 0.85f, 0.10f, 1.f }; // yellow (thumb/index tip)
                 const float lm_r = 0.0033f * DOT_Z;  // ~0.35 degrees apparent size
                 HandState* ovh[2] = { &gev.left, &gev.right };
+                const float panel_x[2] = { -0.55f, 0.55f };  // left hand lower-left, right hand lower-right
                 for (int hnd = 0; hnd < 2; hnd++) {
                     const HandState& h = *ovh[hnd];
                     if (!h.present || !h.has_landmarks) continue;
+                    float leye[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
+                                       panel_x[hnd] * tan_r * DOT_Z, -0.45f * tan_t * DOT_Z, -DOT_Z, 1 };
+                    float panel_mvp[16];
+                    mat_mul(proj, leye, panel_mvp);
                     const float ov_alpha = armed[hnd] ? 1.f : 0.45f;
                     for (int i = 0; i < 21 && ndraw < 54; i++) {
                         float nx = h.landmarks[i][0];
