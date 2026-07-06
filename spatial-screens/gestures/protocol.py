@@ -44,22 +44,33 @@ def encode_frame(timestamp, width, height, fmt, planes):
     return _LENGTH_PREFIX.pack(len(payload)) + payload
 
 
-def encode_event(t, present, handedness, landmarks, pinch_norm, pinch_pos, pose):
-    """One gesture event as newline-delimited JSON.
+def _hand_obj(h):
+    """One hand's sub-object. h is a dict (see encode_event) or None."""
+    if h is None or not h.get("present", False):
+        return {"present": False}
+    return {
+        "present": True,
+        "handedness": h.get("handedness", ""),
+        "pinch_norm": h["pinch_norm"],
+        "pinch_pos": list(h["pinch_pos"]),
+        "pose": h["pose"],
+        "landmarks": [list(p) for p in h["landmarks"]],
+    }
 
-    pinch_pos is the normalized [0,1] midpoint of the thumb-tip/index-tip
-    landmarks — a convenience field (not derivable cheaply on the C++ side
-    without a full JSON array parser) so the C++ consumer can track
-    pinch-drag deltas without parsing the full 21-point landmarks array.
+
+def encode_event(t, left, right):
+    """One gesture event as newline-delimited JSON carrying up to two hands.
+
+    left/right are per-hand dicts (keys: present, handedness, pinch_norm,
+    pinch_pos, pose, landmarks) or None. pinch_pos is the normalized [0,1]
+    midpoint of the thumb-tip/index-tip landmarks — a convenience field so the
+    C++ consumer can track pinch-drag deltas without parsing the full landmarks
+    array.
     """
     obj = {
         "type": "hand",
         "t": t,
-        "present": present,
-        "handedness": handedness,
-        "landmarks": [list(p) for p in landmarks],
-        "pinch_norm": pinch_norm,
-        "pinch_pos": list(pinch_pos),
-        "pose": pose,
+        "left": _hand_obj(left),
+        "right": _hand_obj(right),
     }
     return (json.dumps(obj, separators=(",", ":")) + "\n").encode("utf-8")
