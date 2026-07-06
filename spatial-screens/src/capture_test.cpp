@@ -81,7 +81,7 @@ int main(int argc, char** argv) {
         }
         if (!found) { fprintf(stderr, "no matching output\n"); return 1; }
         printf("capturing %s\n", src.name.c_str());
-        cap = capture_create_xshm(dpy, src);
+        cap = capture_create_xshm(src, 30);
     } else {
         fprintf(stderr, "unknown backend %s\n", backend.c_str());
         return 1;

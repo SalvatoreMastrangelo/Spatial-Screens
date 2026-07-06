@@ -17,6 +17,10 @@ struct OutputRect { std::string name; RROutput id = 0; int x = 0, y = 0, w = 0, 
 
 std::vector<OutputRect> list_outputs(Display* dpy);
 
+// RandR *monitor* objects (xrandr --setmonitor / automatic per-output ones),
+// as OutputRects with id = 0. Names come from the monitor atom.
+std::vector<OutputRect> list_monitors(Display* dpy);
+
 struct SurfaceOut {
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkPhysicalDevice phys = VK_NULL_HANDLE;

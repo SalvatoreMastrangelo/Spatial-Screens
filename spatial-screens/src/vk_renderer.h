@@ -10,6 +10,7 @@ struct QuadDraw {
     float mvp[16];   // column-major, Vulkan clip conventions (y-down, z 0..1)
     float color[4];
     float rect[4];   // cx, cy, half_w, half_h (quad-local units)
+    float uv[4] = {0, 0, 1, 1};  // u0,v0,u1,v1 sub-rect of the shared texture
     bool textured;
     bool circle = false;  // clip to inscribed circle (status dot)
 };
@@ -68,6 +69,12 @@ void vkr_upload(VkRend& r, const void* pixels, size_t bytes);
 // flickering cursor overlay otherwise).
 void vkr_wait_uploads(VkRend& r);
 bool vkr_draw(VkRend& r, const QuadDraw* draws, int n);
+// SBS stereo: draw `left` into the left half viewport, `right` into the
+// right half (extent.width/2 each). Same contract as vkr_draw otherwise.
+// Caller MUST pass a non-null `right` even when nright == 0; a null right
+// list silently downgrades to the single-viewport mono path.
+bool vkr_draw_stereo(VkRend& r, const QuadDraw* left, int nleft,
+                     const QuadDraw* right, int nright);
 void vkr_destroy(VkRend& r);
 
 // Device-level teardown only (waits idle; destroys swapchain, pipeline,

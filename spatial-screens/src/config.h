@@ -4,6 +4,17 @@
 // See docs/specs/2026-07-04-m3-remainder-design.md §2.
 #pragma once
 #include <string>
+#include <vector>
+
+// One virtual screen in the rack (multi-screen stereo). Azimuth: + = to the
+// user's right; elevation: + = up; distance in meters from the rack origin;
+// size = diagonal inches. monitor names a logical monitor (VS1..VSn).
+struct ScreenCfg {
+    std::string monitor;
+    float azimuth = 0.f, elevation = 0.f;
+    float distance = 0.75f;
+    float size = 24.f;
+};
 
 struct Options {
     std::string monitor;                  // glasses output ("" = autodetect)
@@ -18,6 +29,10 @@ struct Options {
     float smooth_ori = 0.40f;
     bool window = false;
     int ws_port = 8765;                   // 0 = telemetry disabled
+    bool stereo = true;                   // SBS 3D on the glasses; false = legacy mono
+    float ipd_mm = 63.f;                  // interpupillary distance (no SDK API for it)
+    std::string workspace = "2x2";        // run.sh logical-monitor grid ("off" = don't touch)
+    std::vector<ScreenCfg> screens;       // empty = default rack from monitor count
 };
 
 // Live-tuned values + portal restore token. Whole file rewritten atomically
@@ -26,6 +41,8 @@ struct AppState {
     float distance = -1.f;                // < 0 = unset
     float size = -1.f;
     std::string restore_token;
+    float rack_distance_scale = -1.f;     // < 0 = unset (multi-screen rack multipliers)
+    float rack_size_scale = -1.f;
 };
 
 std::string config_default_path();  // $XDG_CONFIG_HOME|~/.config + /spatial-screens.conf
