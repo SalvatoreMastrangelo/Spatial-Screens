@@ -1048,13 +1048,23 @@ if [ "$STEREO" = "true" ] && [ "$WORKSPACE" != "off" ] && [ -n "$PANEL" ]; then
             echo "workspace: $PANEL -> ${FB_W}x${FB_H} (scale ${SX}x${SY}), grid ${COLS}x${ROWS}"
             xrandr --output "$PANEL" --scale "${SX}x${SY}"
             SCALED=1
+            # Tile at the panel's framebuffer origin, not (0,0): --scale/reflow
+            # (or a multi-output layout) can move the panel, and the app's
+            # containment filter drops every VS monitor not inside it. Read +X+Y
+            # AFTER the scale; default to origin if the geometry can't be parsed.
+            PGEOM="$(xrandr | awk -v out="$PANEL" \
+                '$1==out {for(i=1;i<=NF;i++) if($i ~ /^[0-9]+x[0-9]+[+-][0-9]+[+-][0-9]+$/){print $i; exit}}' || true)"
+            PX=0 PY=0
+            if [[ "$PGEOM" =~ \+([0-9]+)\+([0-9]+)$ ]]; then
+                PX="${BASH_REMATCH[1]}" PY="${BASH_REMATCH[2]}"
+            fi
             i=1
             for ((row = 0; row < ROWS; row++)); do
                 for ((col = 0; col < COLS; col++)); do
                     name="VS$i"
                     owner="none"; [ "$i" -eq 1 ] && owner="$PANEL"
                     xrandr --setmonitor "$name" \
-                        "${TILE_W}/300x${TILE_H}/190+$((col * TILE_W))+$((row * TILE_H))" \
+                        "${TILE_W}/300x${TILE_H}/190+$((PX + col * TILE_W))+$((PY + row * TILE_H))" \
                         "$owner"
                     MONITORS+=("$name")
                     i=$((i + 1))

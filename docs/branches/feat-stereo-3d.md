@@ -71,6 +71,9 @@ run.sh's trap restores the workspace on its own.
 - [ ] 2. HUD dots/landmarks fuse comfortably (no ghosting)
 - [ ] 3. Sustained 90 Hz; measure real capture-hz ceiling at 3840x2400
 - [ ] 4. Mutter honors --scale + --setmonitor for a full session
+       — verify VS1..VSn actually overlay the capture panel after the 0x45
+       reflow (`xrandr --listmonitors`); if the panel moved off the framebuffer
+       origin, tiles must be offset by its +X+Y or the scene drops to single-screen
 - [ ] 5. Hardware 2D/3D button under the lease → self-heal path works
 - [ ] 6. Restore paths: clean exit, SIGINT, kill -9 + sbs-spike --restore
 - [ ] 7. IPD calibration: far screen fuses without divergence; tune ipd-mm.
@@ -84,3 +87,13 @@ run.sh's trap restores the workspace on its own.
 SDK client). Spike re-run if needed: `./run-spike.sh --mode 0x45`. Safety notes
 (NVIDIA idle-blank hang, panic xrandr restore, SSH recovery) in the spike
 handoff doc, §"Safety first".
+
+## Deferred cleanups (roadmap)
+
+- sbs_mode: clamp a poisoned orig mode — if the startup read returns 0x45, the restore target should be 0x44 (native), not 0x45.
+- vk_surface: gate the 3840×1200 direct-mode preference on stereo intent (don't prefer the SBS mode when stereo is off).
+- Makefile: the `main.o` dependency line omits `scene.h`/`stereo.h`/`sbs_mode.h` — edits to those don't trigger a rebuild.
+- run.sh detects the glasses as literal `DP-1` while the app detects by mode — unify the identity contract.
+- main.cpp: the capture-source predicate is duplicated 3×; dead `old_distance`/`(void)` in the single-mode pinch branch.
+- config.cpp: redundant `dot2 == 7` guard; stereo_math_test: document the 1.1x threshold derivation.
+- dashboard: label the rack multipliers as multipliers (panels.js shows "m"/inches in multi mode).
