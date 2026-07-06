@@ -48,7 +48,7 @@ def _hand_obj(h):
     """One hand's sub-object. h is a dict (see encode_event) or None."""
     if h is None or not h.get("present", False):
         return {"present": False}
-    return {
+    obj = {
         "present": True,
         "handedness": h.get("handedness", ""),
         "pinch_norm": h["pinch_norm"],
@@ -56,6 +56,14 @@ def _hand_obj(h):
         "pose": h["pose"],
         "landmarks": [list(p) for p in h["landmarks"]],
     }
+    # Fused stereo depth (meters), when available. Omitted (not null) when the
+    # sidecar couldn't triangulate, so the C++ scanner's key-presence check
+    # (has_depth) stays simple. Emitted AFTER landmarks — still no nested
+    # braces, so hand_object()'s first-'}' termination holds.
+    depth = h.get("depth")
+    if depth is not None:
+        obj["depth"] = depth
+    return obj
 
 
 def encode_event(t, left, right):

@@ -95,3 +95,23 @@ def test_event_no_hands():
     obj = _decode(encode_event(2.0, None, None))
     assert obj["left"] == {"present": False}
     assert obj["right"] == {"present": False}
+
+
+def test_encode_event_includes_depth_when_present():
+    lm = [(0.1, 0.2)] * 21
+    left = {"present": True, "handedness": "left", "pinch_norm": 0.3,
+            "pinch_pos": (0.15, 0.2), "pose": "fist", "landmarks": lm,
+            "depth": 0.523}
+    obj = _decode(encode_event(1.0, left, None))
+    assert obj["left"]["depth"] == 0.523
+    # compact, no space — the C++ scanner requires it
+    assert b'"depth":0.523' in encode_event(1.0, left, None)
+
+
+def test_encode_event_omits_depth_when_absent_or_none():
+    lm = [(0.1, 0.2)] * 21
+    base = {"present": True, "handedness": "left", "pinch_norm": 0.3,
+            "pinch_pos": (0.15, 0.2), "pose": "fist", "landmarks": lm}
+    assert "depth" not in _decode(encode_event(1.0, base, None))["left"]
+    withnone = dict(base, depth=None)
+    assert "depth" not in _decode(encode_event(1.0, withnone, None))["left"]
