@@ -2,7 +2,7 @@ SDK_DIR := ../sdk
 SDK_LIB := $(SDK_DIR)/lib/x86_64
 
 CXX ?= g++
-CXXFLAGS := -O2 -std=c++17 -Wall -Wextra -I$(SDK_DIR)/include -I../bridge
+CXXFLAGS := -O2 -g -std=c++17 -Wall -Wextra -I$(SDK_DIR)/include -I../bridge
 VK_LIBS := -lvulkan -lX11 -lXext -lXrandr -lXfixes
 
 CAP_PC := dbus-1 libpipewire-0.3
@@ -12,7 +12,7 @@ CXXFLAGS += $(CAP_CFLAGS)
 
 LDFLAGS := -L$(SDK_LIB) -lglasses $(VK_LIBS) -lpthread $(CAP_LIBS) \
 	-Wl,--disable-new-dtags,-rpath,'$$ORIGIN/$(SDK_LIB)' \
-	-Wl,--allow-shlib-undefined
+	-Wl,--allow-shlib-undefined -rdynamic
 
 SHADER_HDRS := shaders/quad.vert.spv.h shaders/quad.frag.spv.h
 OBJS := src/main.o src/vk_renderer.o src/vk_surface.o src/gesture_client.o \

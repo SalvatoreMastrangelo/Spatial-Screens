@@ -12,7 +12,6 @@ import argparse
 import os
 import socket
 import sys
-import threading
 import time
 import urllib.request
 
@@ -108,11 +107,8 @@ def _landmarks_to_pairs(hand_landmarks):
 
 
 def build_landmarker():
-    """Import mediapipe and construct one HandLandmarker (up to two hands).
-
-    main() builds two independent instances of this — one per camera plane
-    (left/right) — since VIDEO running-mode is stateful per stream and each
-    needs its own monotonic timestamp counter.
+    """Import mediapipe and construct the HandLandmarker (up to two hands in one
+    frame — that single frame is what makes the left/right split consistent).
 
     Deliberately called *before* connect() (see main()): on real hardware,
     `import mediapipe` plus model load takes ~0.5s (mostly import time), and
@@ -143,21 +139,11 @@ def build_landmarker():
     )
 
 
-def run_inference(sock, read_exact, landmarker_left, landmarker_right):
+def run_inference(sock, read_exact, landmarker):
     import cv2
     import mediapipe as mp
     import numpy as np
     from classify import classify_pose, pinch_norm, pinch_pos, select_hand
-
-    def detect(landmarker, plane, width, height, ts_ms):
-        gray = np.frombuffer(plane, dtype=np.uint8).reshape(height, width)
-        rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        result = landmarker.detect_for_video(mp_image, ts_ms)
-        return [
-            (result.handedness[i][0].category_name, _landmarks_to_pairs(lm))
-            for i, lm in enumerate(result.hand_landmarks)
-        ]
 
     def hand_dict(lm, handedness):
         return {
@@ -169,7 +155,7 @@ def run_inference(sock, read_exact, landmarker_left, landmarker_right):
             "landmarks": lm,
         }
 
-    last_ts_l, last_ts_r = -1, -1
+    last_ts = -1
     while True:
         frame = read_frame(read_exact)
         if frame is None:
@@ -181,36 +167,29 @@ def run_inference(sock, read_exact, landmarker_left, landmarker_right):
                   f"skipping", file=sys.stderr)
             continue
 
-        # detect_for_video needs strictly-increasing per-stream timestamps.
-        ts_l = max(int(timestamp * 1000), last_ts_l + 1)
-        last_ts_l = ts_l
-        # Right camera plane if present, else fall back to the left plane so a
-        # single-plane sender still yields both hands (num_hands=2 sees both).
-        right_plane = planes[1] if len(planes) > 1 else planes[0]
-        ts_r = max(int(timestamp * 1000), last_ts_r + 1)
-        last_ts_r = ts_r
+        # Single frame, both hands: run ONE landmarker (num_hands=2) on ONE camera
+        # image (the left plane) and split left/right by spatial x-position within
+        # that single frame (see classify.select_hand). Distinguishing hands
+        # across the two stereo cameras was tried and failed: parallax (~6 cm
+        # baseline) makes the cameras disagree on which side a near-center hand is
+        # on, so it appeared in both panels. One frame = one consistent x-axis =
+        # a hand is left OR right, never both. planes[1], if the C++ side still
+        # sends it, is unused here — reserved for future stereo fusion (which
+        # would add true depth; see docs/specs/2026-07-06-two-hand-gestures-design.md).
+        gray = np.frombuffer(planes[0], dtype=np.uint8).reshape(height, width)
+        rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
 
-        # Run the two independent landmarker inferences CONCURRENTLY. They use
-        # separate landmarker instances on separate planes and share no state,
-        # and MediaPipe releases the GIL during its C++ graph, so two threads
-        # nearly halve the per-frame cost (~1.7x measured on hardware) — letting
-        # dual-camera tracking hold the 15 Hz target. Sequential is ~52 ms/cycle
-        # (~19 Hz ceiling, lower with hands in frame); threaded ~30 ms.
-        hands = [None, None]
+        ts = max(int(timestamp * 1000), last_ts + 1)  # must strictly increase
+        last_ts = ts
+        result = landmarker.detect_for_video(mp_image, ts)
+        hands = [
+            (result.handedness[i][0].category_name, _landmarks_to_pairs(lm))
+            for i, lm in enumerate(result.hand_landmarks)
+        ]
 
-        def _run(idx, landmarker, plane, ts):
-            hands[idx] = detect(landmarker, plane, width, height, ts)
-
-        tL = threading.Thread(target=_run, args=(0, landmarker_left, planes[0], ts_l))
-        tR = threading.Thread(target=_run, args=(1, landmarker_right, right_plane, ts_r))
-        tL.start()
-        tR.start()
-        tL.join()
-        tR.join()
-        left_hands, right_hands = hands
-
-        left_lm = select_hand(left_hands, "left")
-        right_lm = select_hand(right_hands, "right")
+        left_lm = select_hand(hands, "left")
+        right_lm = select_hand(hands, "right")
         left = hand_dict(left_lm, "left") if left_lm is not None else None
         right = hand_dict(right_lm, "right") if right_lm is not None else None
         sock.sendall(encode_event(timestamp, left, right))
@@ -223,11 +202,9 @@ def main():
                          help="skip MediaPipe; just acknowledge frames (IPC smoke test)")
     args = parser.parse_args()
 
-    # Build the (slow-to-import/load) landmarkers before connecting — see
-    # build_landmarker()'s docstring for why ordering matters. Two independent
-    # VIDEO streams (left + right camera) each need their own stateful instance.
-    landmarker_left = None if args.echo else build_landmarker()
-    landmarker_right = None if args.echo else build_landmarker()
+    # Build the (slow-to-import/load) landmarker before connecting — see
+    # build_landmarker()'s docstring for why ordering matters.
+    landmarker = None if args.echo else build_landmarker()
 
     sock = connect(args.socket)
     read_exact = make_reader(sock)
@@ -235,7 +212,7 @@ def main():
     if args.echo:
         run_echo(sock, read_exact)
     else:
-        run_inference(sock, read_exact, landmarker_left, landmarker_right)
+        run_inference(sock, read_exact, landmarker)
 
 
 if __name__ == "__main__":

@@ -95,24 +95,41 @@ def test_pinch_pos_is_midpoint_of_tips():
     assert pinch_pos(lm) == pytest.approx((0.3, 0.5))
 
 
-_LMA = [(0.1, 0.1)] * 21
-_LMB = [(0.9, 0.9)] * 21
+# select_hand distinguishes hands by SPATIAL wrist x (landmark 0), NOT
+# MediaPipe's handedness label (which flips unreliably between the two stereo
+# cameras). _LMA's wrist is at image-left x=0.1; _LMB's at image-right x=0.9.
+_LMA = [(0.1, 0.1)] * 21   # wrist image-left
+_LMB = [(0.9, 0.9)] * 21   # wrist image-right
 
 
-def test_select_hand_no_mirror():
-    hands = [("Left", _LMA), ("Right", _LMB)]
-    assert select_hand(hands, "left", mirror=False) is _LMA
+def test_select_hand_spatial_no_mirror():
+    hands = [("ignored", _LMA), ("ignored", _LMB)]
+    assert select_hand(hands, "left", mirror=False) is _LMA   # image-left = user-left
     assert select_hand(hands, "right", mirror=False) is _LMB
 
 
-def test_select_hand_mirror_flips_label():
-    # Forward-facing camera: MediaPipe's "Left" is really the user's right hand.
-    hands = [("Left", _LMA), ("Right", _LMB)]
+def test_select_hand_spatial_mirror():
+    # Forward-facing camera: the image-left hand is the user's RIGHT.
+    hands = [("ignored", _LMA), ("ignored", _LMB)]
     assert select_hand(hands, "right", mirror=True) is _LMA
     assert select_hand(hands, "left", mirror=True) is _LMB
 
 
-def test_select_hand_absent_returns_none():
-    hands = [("Left", _LMA)]
-    assert select_hand(hands, "right", mirror=False) is None  # only Left present
-    assert select_hand([], "left", mirror=False) is None
+def test_select_hand_ignores_mediapipe_label():
+    # Labels deliberately contradict position; position must win.
+    hands = [("Right", _LMA), ("Left", _LMB)]
+    assert select_hand(hands, "left", mirror=False) is _LMA
+    assert select_hand(hands, "right", mirror=False) is _LMB
+
+
+def test_select_hand_lone_hand_matches_one_side_only():
+    # The "same hand on both sides" fix: a single image-left hand is the
+    # user-left only; requesting the user-right yields None.
+    hands = [("ignored", _LMA)]  # image-left, x=0.1
+    assert select_hand(hands, "left", mirror=False) is _LMA
+    assert select_hand(hands, "right", mirror=False) is None
+
+
+def test_select_hand_empty_returns_none():
+    assert select_hand([], "left") is None
+    assert select_hand([], "right") is None

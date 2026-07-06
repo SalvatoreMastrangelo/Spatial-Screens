@@ -13,8 +13,37 @@ Extend the `spatial-screens` gesture system from one tracked hand to two:
   (diagonal), midpoint repositions it laterally. Depth stays on the one-handed
   drag.
 - **Per-hand arming**: each open palm arms its own hand.
-- **Dual camera, per-hand**: left hand from the left tracking camera, right hand
-  from the right camera. No stereo fusion (parked as a future idea).
+- **Hand detection**: single camera frame, `num_hands=2` — see the pivot below.
+
+## Hardware bring-up (2026-07-06) — pivoted to single-frame
+
+The original design used **dual camera, per-hand** (left hand from the left
+tracking camera, right hand from the right). On-glasses testing killed it:
+
+1. **Routing by MediaPipe handedness label** → the same physical hand is labelled
+   differently by the two stereo views, so a lone hand appeared in BOTH panels.
+2. Switched to **routing by spatial x-position** → still doubled: the ~6 cm
+   stereo baseline means the two cameras disagree on which side a *near-center*
+   hand is on (parallax), so it's claimed by both. This is **inherent** to any
+   two-independent-cameras approach — not tunable.
+3. Also **2× inference lag**: threading the two inferences (1.74× faster) plus a
+   rate-cap bump got 25 Hz hand-free, but with hands the sender out-drove the
+   sidecar and its mutex stalled the render loop (fps → single digits).
+
+**Decision: single-frame `num_hands=2`** — detect both hands in ONE image; the
+left/right split comes from one consistent x-axis, so a hand is left OR right,
+never both. Also one inference (no lag). `MIRROR_HANDEDNESS=False` (True read
+inverted on hardware). The C++ side still sends both planes but the sidecar uses
+only the left; the second plane is reserved for **camera fusion for depth**
+(design doc "Future ideas") — the SDK exposes no stereo calibration, so real
+fusion is a multi-day self-calibration project, deferred.
+
+Also added on this pass: a SIGSEGV/SIGABRT **crash-backtrace handler** in
+`main.cpp` (built with `-g -rdynamic`) to catch the intermittent direct-mode
+crash. Testing gotcha: `--window` mode dies from an Xlib "connection broken"
+compositor quirk after ~30 s; **direct mode is the stable path** (a crash there
+wedges DP-1 at `non-desktop=1` — recover with `xrandr --output DP-1
+--set non-desktop 0 --auto`, or replug).
 
 ## Design of record
 

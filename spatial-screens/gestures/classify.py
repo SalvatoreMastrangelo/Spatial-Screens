@@ -7,10 +7,13 @@ standard MediaPipe Hands landmark layout.
 """
 import math
 
-# MediaPipe reports handedness assuming a mirrored (selfie) image; the Luma's
-# tracking cameras face forward, so the Left/Right labels are inverted relative
-# to the user's actual hands. Flip them here. Pinned during the hardware pass.
-MIRROR_HANDEDNESS = True
+# Which image side the user's LEFT hand appears on. MediaPipe's own handedness
+# LABEL proved unreliable, so select_hand distinguishes hands by spatial
+# x-position and this constant maps image side -> user hand. On hardware
+# (2026-07-06) True read INVERTED (the user's left hand showed on the right), so
+# it is False: the user's LEFT hand appears on the image LEFT — the forward-
+# facing tracking camera is not mirrored. Pinned on hardware.
+MIRROR_HANDEDNESS = False
 
 WRIST = 0
 THUMB_TIP = 4
@@ -71,12 +74,30 @@ def classify_pose(landmarks):
 
 def select_hand(hands, target, mirror=MIRROR_HANDEDNESS):
     """Pick the user's `target` ('left'/'right') hand from one frame's
-    detections. `hands` is a list of (handedness_label, landmarks) tuples.
-    Returns the matching landmarks, or None if that hand isn't in this frame."""
-    for label, landmarks in hands:
-        user_label = label.lower()
-        if mirror:
-            user_label = "right" if user_label == "left" else "left"
-        if user_label == target:
-            return landmarks
-    return None
+    detections by SPATIAL x-position, ignoring MediaPipe's handedness label.
+
+    The label is unreliable here: the two stereo cameras view a hand from
+    different angles, so MediaPipe labels the same physical hand differently in
+    each frame (which made a lone hand match in both). Position is robust: sort
+    detected hands by wrist x — the image-left hand is one side, the image-right
+    hand the other. `mirror` maps image side -> user hand (see MIRROR_HANDEDNESS:
+    forward-facing camera -> the user's left hand is on the image right).
+
+    `hands` is a list of (handedness_label, landmarks); the label is ignored.
+    Returns the target hand's landmarks, or None if it isn't in this frame.
+    """
+    if not hands:
+        return None
+    # Does the user's `target` hand sit on the image-left half?
+    #   mirror=True  (forward camera): user-left is on image-RIGHT.
+    #   mirror=False (mirrored view):  user-left is on image-LEFT.
+    want_image_left = (target == "right") if mirror else (target == "left")
+    ordered = sorted(hands, key=lambda h: h[1][WRIST][0])  # ascending image x
+    if len(ordered) == 1:
+        # One hand: classify by which half of the image its wrist is in, so a
+        # lone hand only satisfies ONE side (the "same hand on both sides" fix).
+        is_image_left = ordered[0][1][WRIST][0] < 0.5
+        return ordered[0][1] if is_image_left == want_image_left else None
+    # Two+ hands: take the extreme in the wanted direction.
+    chosen = ordered[0] if want_image_left else ordered[-1]
+    return chosen[1]

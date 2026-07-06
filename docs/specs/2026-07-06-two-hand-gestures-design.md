@@ -209,10 +209,26 @@ Screen distance is untouched during a grab (the one-handed drag owns depth).
 
 ## Future ideas (documented, not built)
 
-- **Stereo fusion** of the two grayscale cameras — true depth from disparity and
-  a wider fused FOV. Would enable depth-aware gestures and z-reposition in the
-  two-hand grab. Needs calibration and roughly doubles or restructures the
-  inference path.
+- **Camera fusion for depth** (the proper next project; deferred 2026-07-06).
+  Fuse the two grayscale cameras to recover each hand's true 3D position from
+  stereo disparity. Real payoff: **depth** — push/pull-to-move-in-Z and other
+  depth-aware gestures that a single 2D camera can't do robustly (see the
+  one-handed distance gesture, which today rides on vertical hand motion because
+  single-camera depth is too noisy). It would also inherently deduplicate hands
+  (one 3D entity, not one-per-camera).
+  **Why it's a real project, not a quick fix:** the VITURE SDK exposes *no*
+  stereo calibration — the camera callback hands over raw left/right image
+  buffers + width/height and nothing else (no intrinsics, no baseline, no
+  relative pose; confirmed in `sdk/include/viture_device_carina.h`). So fusion
+  requires **self-calibration** (checkerboard or online stereo calibration),
+  then rectification, cross-camera correspondence, and triangulation — a
+  multi-day computer-vision effort. It also still runs 2× inference, so it does
+  **not** reduce latency. It deserves its own design + calibration spike.
+  *Not* the way to fix hand left/right separation — that is solved structurally
+  by the **single-frame `num_hands=2`** approach adopted on hardware
+  (2026-07-06): detect both hands in ONE camera image so the left/right split
+  comes from one consistent x-axis (no cross-camera parallax). See the branch
+  doc `docs/branches/feat-two-hand-gestures.md` for that pivot and its evidence.
 - **Two-hand rotation** — angle between the two pinch points → screen yaw/roll,
   a natural add on top of the existing grab snapshot.
 - **Downscaled grayscale inference** — *investigated on hardware 2026-07-06,

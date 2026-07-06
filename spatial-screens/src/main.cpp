@@ -37,6 +37,7 @@
 #include <chrono>
 #include <cmath>
 #include <csignal>
+#include <execinfo.h>
 #include <cstdio>
 #include <cstring>
 #include <dirent.h>
@@ -323,6 +324,21 @@ static int sample_rss_mb() {
 
 static void on_signal(int) { g_running = false; }
 
+// Crash backtrace: on a fatal fault, dump the C++ stack to stderr
+// (async-signal-safe backtrace_symbols_fd) then re-raise the default handler so
+// it still core-dumps / exits with the signal. Diagnostic aid for the two-hand
+// hardware bring-up; build with -g -rdynamic for readable frames.
+static void on_crash(int sig) {
+    void* frames[32];
+    int n = backtrace(frames, 32);
+    const char msg[] = "\n*** spatial-screens crash — backtrace ***\n";
+    ssize_t wr = write(STDERR_FILENO, msg, sizeof(msg) - 1);
+    (void)wr;
+    backtrace_symbols_fd(frames, n, STDERR_FILENO);
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
 // X errors must never kill us: between display acquisition and teardown a
 // fatal default handler would strand the leased output (seen live: BadAccess
 // from XGrabKey when another client held the combo). Log and carry on.
@@ -399,6 +415,8 @@ int main(int argc, char** argv) {
     bool force_window = o.window;
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
+    signal(SIGSEGV, on_crash);
+    signal(SIGABRT, on_crash);
 
     Display* dpy = XOpenDisplay(nullptr);
     if (!dpy) { fprintf(stderr, "cannot open X display\n"); return 1; }

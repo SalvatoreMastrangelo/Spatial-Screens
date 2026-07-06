@@ -19,13 +19,16 @@ extern char** environ;
 namespace {
 
 // Upper bound on frames/sec sent to the sidecar. The tracking camera delivers
-// ~25 Hz (40 ms grid); this cap only matters as an anti-aliasing guard: it must
-// stay ABOVE the camera rate so the 1/HZ interval (here 33 ms) is shorter than
-// the 40 ms frame spacing, letting every camera frame through. A cap at/below
-// the camera rate (e.g. the old 15 Hz → 66.7 ms) aliases against the 40 ms grid
-// and passes only every other frame (~12.5 Hz). The sidecar keeps up at the full
-// 25 Hz because its two landmarker inferences run concurrently (~30 ms/cycle).
-constexpr double GESTURE_INFER_HZ = 30.0;
+// ~25 Hz (40 ms grid). Pushing the full 25 Hz was tried (cap 30) but the
+// two-camera sidecar can't sustain a 40 ms cycle once hands are in frame (the
+// landmark stage adds cost), so the sender out-drove it: maybe_send_frame's
+// blocking send holds the mutex that the render loop's poll() also needs,
+// stalling the render loop (fps → single digits, felt as lag). At 15 Hz the
+// 66.7 ms interval aliases the 40 ms grid down to ~12.5 Hz (every OTHER camera
+// frame), which the threaded sidecar drains comfortably (~30-50 ms/cycle),
+// keeping the pipeline smooth. 12.5 Hz is the honest sustainable rate for
+// dual-camera tracking with hands present.
+constexpr double GESTURE_INFER_HZ = 15.0;
 
 double now_s() {
     using namespace std::chrono;
