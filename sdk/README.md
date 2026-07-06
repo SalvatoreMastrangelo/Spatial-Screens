@@ -1,12 +1,25 @@
-# Vendored VITURE XR Glasses SDK (v2.0.0)
+# VITURE XR Glasses SDK v2.0.0 (fetched, not vendored)
 
-This directory contains the **official unified VITURE XR Glasses SDK v2.0.0**
+This directory holds the **official unified VITURE XR Glasses SDK v2.0.0**
 (2025, C/C++ API) for Linux x86_64 — the current-generation SDK that supports
 the whole lineup including **Luma Ultra** (device type `XR_DEVICE_TYPE_VITURE_CARINA`,
 PIDs `0x1101` / `0x1104`). This is *not* the legacy `viture_one_sdk` v1.x,
 which was 3DoF-only and predates the Luma series.
 
-## Contents
+> **The SDK binaries are © VITURE Inc. (all rights reserved) and are _not_
+> committed to this repository.** They are downloaded on demand by
+> [`fetch-sdk.sh`](./fetch-sdk.sh), which pulls them unmodified from the pinned
+> upstream commit below and verifies every file by sha256.
+
+## Fetching
+
+```bash
+./sdk/fetch-sdk.sh      # idempotent; populates include/ and lib/x86_64/
+```
+
+`include/` and `lib/` are git-ignored — the script recreates them.
+
+## Contents (after fetching)
 
 - `include/` — public C API headers (`viture_glasses_provider.h`,
   `viture_device.h`, `viture_device_carina.h`, `viture_protocol.h`, …)
@@ -28,16 +41,15 @@ which was 3DoF-only and predates the Luma series.
 
 ## Provenance
 
-Copied from the `wheaney/XRLinuxDriver` repository (which redistributes the
-official VITURE SDK binaries for its VITURE support), commit
+`fetch-sdk.sh` downloads from the `wheaney/XRLinuxDriver` repository (which
+redistributes the official VITURE SDK binaries for its VITURE support), commit
 `08b3bc93d1dff5f8843be30fbc262fb5364f7fa3` (2026-04-02):
 
 - headers: `XRLinuxDriver/include/sdks/viture_*.h`
 - libraries: `XRLinuxDriver/lib/x86_64/viture/`
 
 Canonical source: <https://www.viture.com/developer> ("VITURE XR Glasses SDK",
-Android/Linux/Windows/macOS). Binaries are © VITURE Inc., all rights reserved;
-they are vendored here unmodified for local development only.
+Android/Linux/Windows/macOS). Binaries are © VITURE Inc., all rights reserved.
 
 ## Linking notes
 

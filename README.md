@@ -27,7 +27,21 @@ Two independent data paths:
 | **WebHID** (Chrome/Edge) | udev rule only | 3DoF orientation + MCU events — older models only. **Not functional on Luma Ultra**: its HID endpoints don't speak the classic protocol (hardware-verified; the Carina SDK uses USB control transfers instead). Use the bridge. |
 | **Native bridge** | udev rule + `make` | 6DoF pose, raw accel/gyro, VSync, device state, firmware info (mag/temp: not exposed by the Luma Ultra's Carina IMU callback; older models get them via raw mode) |
 
-## One-time setup (required for BOTH paths)
+## Setup
+
+### 1. Fetch the VITURE SDK (needed to build the native bridge & spatial-screens)
+
+The proprietary VITURE SDK binaries are **not** included in this repo. Fetch
+them (each verified by sha256) with:
+
+```bash
+./sdk/fetch-sdk.sh
+```
+
+See [`sdk/README.md`](sdk/README.md) for exactly what this downloads and its
+provenance. The WebHID-only path (below) doesn't need the SDK.
+
+### 2. Install the udev rule (required for BOTH data paths)
 
 The glasses' USB/hidraw nodes are root-only by default. Install the udev rule
 and replug the glasses:
@@ -71,8 +85,9 @@ MCU/state events as they arrive.
 - `sensor-viz/` — web app (Vite + Three.js, no other runtime deps)
 - `bridge/` — native daemon: official SDK → WebSocket JSON (see header of
   `bridge/main.cpp` for the message protocol)
-- `sdk/` — vendored **official VITURE XR Glasses SDK v2.0.0** (Luma-series
-  capable; see `sdk/README.md` for provenance — *not* the legacy 3DoF One SDK)
+- `sdk/` — **official VITURE XR Glasses SDK v2.0.0** (Luma-series capable),
+  fetched by `sdk/fetch-sdk.sh`; the binaries are © VITURE and not committed
+  here (see `sdk/README.md` for provenance — *not* the legacy 3DoF One SDK)
 - `docs/plan/` — [`roadmap.md`](docs/plan/roadmap.md) (both phases),
   [`phase2-spatial-screens.md`](docs/plan/phase2-spatial-screens.md) (researched
   feature plan for the spatial-screens program)
@@ -91,3 +106,15 @@ MCU/state events as they arrive.
   the glasses' stereo tracking cameras.
 - Without the udev rule, `xr_device_provider_start()` segfaults inside the
   closed SDK (USB open fails ungracefully) — install the rule before running.
+
+## License
+
+This project's own source (the `bridge/`, `sensor-viz/`, and `spatial-screens/`
+code) is released under the **GNU General Public License v3.0** — see
+[`LICENSE`](LICENSE).
+
+© 2026 Salvatore Mastrangelo.
+
+The VITURE SDK under `sdk/` is **not** covered by this license: those binaries
+are © VITURE Inc. (all rights reserved) and are fetched, not redistributed —
+see [`sdk/README.md`](sdk/README.md).

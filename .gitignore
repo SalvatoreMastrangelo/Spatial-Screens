@@ -1,6 +1,9 @@
 node_modules/
 dist/
 reference/
+# Vendored VITURE SDK — © VITURE Inc., not redistributed. Run ./sdk/fetch-sdk.sh
+sdk/include/
+sdk/lib/
 bridge/viture-bridge
 *.o
 .DS_Store
