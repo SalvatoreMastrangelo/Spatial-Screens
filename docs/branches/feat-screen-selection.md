@@ -92,6 +92,8 @@ Base: `08a4766` (design + plan commit), branched from `main` @ `80e3a23`.
 | 4 | `33b574c` | `active_screen` state + `two_up` rising-edge gaze-select + seed override + disarm (`main.cpp`); `SELECT_CONE_DEG`/`SELECT_BORDER_M` constants |
 | 5 | `3363e6c` | retarget distance/size hotkeys + one-hand pinch-drag + two-hand grab to the active screen's override/size (`main.cpp`) |
 | 6 | `bae4fb9` | green outside border: 4 coplanar edge bars around the active screen; draw cap `64→72` (`main.cpp`) |
+| 7 | `1ceea36` | branch resume doc (this file) |
+| fix | `9e02f7e` | final-review fixes: gaze pick applies `pitch_trim` (`head_pick = qmul(head_rc, trim)`); **full size-detach** of the selected screen (fold `rack_size_scale` into `cfg.size` once at select → no jump, then render overridden screens without it); de-dup the selection green into one hoisted `status_green` |
 
 ## Deferred / next-feature notes
 
@@ -120,8 +122,21 @@ Base: `08a4766` (design + plan commit), branched from `main` @ `80e3a23`.
       `wsrv::Server::accept_new()`, present on `main` before this branch);
       `gesture_parse_test`, `gesture_manip_test`, `stereo_math_test` all "all
       checks passed"; `pytest tests/test_classify.py -v` — 15/15 passed.
+- [x] **Whole-branch review + fix wave (2026-07-06, opus).** Verdict: merge with
+      fixes — backward-compat airtight, no Critical. Two Important fixed in
+      `9e02f7e` (pitch_trim gaze pick; full size-detach per user choice); shared
+      green de-duped. Re-verified sound. Open **backlog** (non-blocking): grab
+      diag clamp `[20,200]` vs size-hotkey `[10,400]` mismatch (now in
+      visible-size space after the detach); no "reset screen to rack" affordance
+      yet; exact-cone-boundary unit test.
 - [ ] **Hardware pass (next step, user-driven on the glasses).** In a
       multi-screen rack + stereo session, confirm:
+    - [ ] **Vertical select under `pitch_trim = 16`:** looking at a screen
+          above/below center selects the one you're actually aiming at (this is
+          what the `pitch_trim` pick fix targets — the reason to test it live).
+    - [ ] **Selecting in a globally-scaled rack** (after `-`/`=` global resize)
+          produces **no size pop** on the selected screen, and subsequent per-
+          screen resizes feel 1:1.
     - [ ] `two_up` while looking at a screen selects it; a **green border
           appears outside** that screen and the content inside is untouched;
           both eyes show it.
