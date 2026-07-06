@@ -1058,6 +1058,11 @@ int main(int argc, char** argv) {
             }
         }
         static int draw_fail = 0;
+        // Consecutive rebuilds with no present in between — a rebuild whose
+        // acquire+init succeed but whose presents never recover would loop
+        // forever otherwise (the 120-frame latch is unreachable once draw_fail
+        // resets on rebuild). Reset when a present lands.
+        static int rebuilds_without_present = 0;
         // Stereo passes both stack lists (draws[1] is non-null even when
         // empty — a null right list would silently downgrade to mono).
         bool drew = stereo_active
@@ -1065,10 +1070,16 @@ int main(int argc, char** argv) {
             : vkr_draw(vk, draws[0], ndraw[0]);
         if (drew) {
             draw_fail = 0;
+            rebuilds_without_present = 0;
             frames++;
         } else {
             draw_fail++;
-            if (sout.direct && draw_fail == 30) {
+            if (sout.direct && draw_fail == 30 && ++rebuilds_without_present > 3) {
+                fprintf(stderr, "display: %d rebuilds without a present — shutting down\n",
+                        rebuilds_without_present);
+                tele.log("error", "display rebuild livelock - shutting down");
+                g_running = false;
+            } else if (sout.direct && draw_fail == 30) {
                 // Panel mode likely changed under the lease (hardware 2D/3D
                 // toggle): rebuild the whole display chain against the current
                 // mode and re-pick stereo/mono from the new extent.
