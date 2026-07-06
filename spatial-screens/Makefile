@@ -16,7 +16,7 @@ LDFLAGS := -L$(SDK_LIB) -lglasses $(VK_LIBS) -lpthread $(CAP_LIBS) \
 
 SHADER_HDRS := shaders/quad.vert.spv.h shaders/quad.frag.spv.h
 OBJS := src/main.o src/vk_renderer.o src/vk_surface.o src/gesture_client.o \
-        src/gesture_parse.o \
+        src/gesture_parse.o src/gesture_manip.o \
         src/capture.o src/capture_xshm.o src/config.o src/capture_portal.o src/telemetry.o
 
 spatial-screens: $(OBJS)
@@ -36,8 +36,19 @@ src/gesture_parse_test.o: src/gesture_parse_test.cpp src/gesture_parse.h src/ges
 gesture-parse-test: src/gesture_parse_test.o src/gesture_parse.o
 	$(CXX) $^ -o $@
 
-test: gesture-parse-test
+src/gesture_manip.o: src/gesture_manip.cpp src/gesture_manip.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+src/gesture_manip_test.o: src/gesture_manip_test.cpp src/gesture_manip.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Pure grab-math test — links only the manip unit, no SDK/Vulkan deps.
+gesture-manip-test: src/gesture_manip_test.o src/gesture_manip.o
+	$(CXX) $^ -o $@
+
+test: gesture-parse-test gesture-manip-test
 	./gesture-parse-test
+	./gesture-manip-test
 
 src/config.o: src/config.cpp src/config.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
@@ -74,6 +85,6 @@ capture-test: src/capture_test.o $(CAPTURE_OBJS) src/vk_surface.o
 run: spatial-screens
 	./run.sh
 clean:
-	rm -f spatial-screens vk-test capture-test gesture-parse-test src/*.o
+	rm -f spatial-screens vk-test capture-test gesture-parse-test gesture-manip-test src/*.o
 
 .PHONY: run clean test
