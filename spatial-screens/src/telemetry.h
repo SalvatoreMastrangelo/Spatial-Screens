@@ -17,6 +17,10 @@ public:
     // telemetry is never fatal.
     bool start(uint16_t port);
     void stop();
+    // Early-exit paths return without reaching the explicit stop(); a
+    // joinable server thread at destruction is std::terminate (SIGABRT,
+    // seen on hardware when the glasses' DP link was down at startup).
+    ~Telemetry() { stop(); }
     bool enabled() const { return enabled_; }
 
     void send_hello(const char* market, int pid, const char* firmware, int device_type); // <= 1/2s

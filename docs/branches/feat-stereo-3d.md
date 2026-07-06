@@ -67,19 +67,27 @@ Panic if killed hard: `LD_LIBRARY_PATH=../sdk/lib/x86_64 ./sbs-spike --restore`
 and `xrandr --output DP-1 --set non-desktop 0 && xrandr --output DP-1 --auto`;
 run.sh's trap restores the workspace on its own.
 
-- [ ] 1. 0x45 lights up in-app; eyes-on depth separation between rack screens
-- [ ] 2. HUD dots/landmarks fuse comfortably (no ghosting)
-- [ ] 3. Sustained 90 Hz; measure real capture-hz ceiling at 3840x2400
-- [ ] 4. Mutter honors --scale + --setmonitor for a full session
+- [ ] 1. 0x45 lights up in-app ✓ (2026-07-06, ~700 ms, direct 3840x1200@90); eyes-on depth
+       separation between rack screens — PENDING EYES
+- [ ] 2. HUD dots/landmarks fuse comfortably (no ghosting) — PENDING EYES
+- [x] 3. Sustained 86-89 fps after moving XShm grabs + cursor composite onto a capture
+       thread (was 20); real capture ceiling at 3840x2400 ≈ 30-80/s (load-dependent)
+- [x] 4. Mutter honors --scale + --setmonitor for a full session — but ONLY when applied
+       after the lease (mutter reverts anything set before the SBS-adopt/lease reflows);
+       run.sh now sequences this. VS1-4 held a 7-min session
        — verify VS1..VSn actually overlay the capture panel after the 0x45
        reflow (`xrandr --listmonitors`); if the panel moved off the framebuffer
        origin, tiles must be offset by its +X+Y or the scene drops to single-screen
 - [ ] 5. Hardware 2D/3D button under the lease → self-heal path works
-- [ ] 6. Restore paths: clean exit, SIGINT, kill -9 + sbs-spike --restore
+- [x] 6. Restore paths: clean exit ✓, SIGINT ✓ (0x44 restore needs 1-3 retries — USB
+       retrain race, now retried 6x500ms), kill -9: run.sh trap cleans workspace ✓,
+       sbs-spike --restore recovers a stranded panel ✓ (stereo-kill variant pending:
+       glasses DP link dropped, needs physical wake)
 - [ ] 7. IPD calibration: far screen fuses without divergence; tune ipd-mm.
        If depth reads INVERTED (near screens look far), the panel routes the
        left half to the right eye — negate stereo_eye_offset's sign
-- [ ] 8. stereo=false mono multi-screen still renders correctly
+- [x] 8. stereo=false mono multi-screen renders: 4-screen rack, mono, 1920x1200@120,
+       103-110 fps, panel never leaves 0x44 (eyes-on look still worthwhile)
 
 ## How to test
 
@@ -89,6 +97,14 @@ SDK client). Spike re-run if needed: `./run-spike.sh --mode 0x45`. Safety notes
 handoff doc, §"Safety first".
 
 ## Deferred cleanups (roadmap)
+
+- async texture upload: the 36 MB staging memcpy runs on the render thread
+  and costs ~4-5 ms per consumed frame — the last barrier between ~80 and a
+  locked 90 Hz (move the memcpy to the capture thread, double-stage)
+- view-dependent capture: grab/upload only the workspace tiles whose screens
+  intersect either eye frustum (with margin + hysteresis against edge pop-in).
+  Draw-side FOV culling is free already (GPU clips off-view quads) — the
+  win is skipping their share of the grab blit and upload
 
 - sbs_mode: clamp a poisoned orig mode — if the startup read returns 0x45, the restore target should be 0x44 (native), not 0x45.
 - vk_surface: gate the 3840×1200 direct-mode preference on stereo intent (don't prefer the SBS mode when stereo is off).
