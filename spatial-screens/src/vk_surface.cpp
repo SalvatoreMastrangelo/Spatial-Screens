@@ -93,8 +93,20 @@ void direct_restore(Display* dpy) {
         Status st = RRSetConfigFailed;
         for (int i = 0; i < 30 && st != RRSetConfigSuccess; i++) {
             XRRScreenResources* res = XRRGetScreenResourcesCurrent(dpy, root);
+            // The saved mode can vanish mid-teardown (restoring the panel to
+            // 2D swaps the EDID and drops the 3840-wide mode) — re-validate
+            // it every attempt and fall back to the output's preferred mode.
+            RRMode want = g_saved.mode;
+            XRROutputInfo* oi = XRRGetOutputInfo(dpy, res, g_saved.output);
+            if (oi && oi->nmode) {
+                bool listed = false;
+                for (int m = 0; m < oi->nmode; m++)
+                    if (oi->modes[m] == want) { listed = true; break; }
+                if (!listed) want = oi->modes[0];
+            }
+            if (oi) XRRFreeOutputInfo(oi);
             st = XRRSetCrtcConfig(dpy, res, g_saved.crtc, CurrentTime,
-                                  g_saved.x, g_saved.y, g_saved.mode, g_saved.rot,
+                                  g_saved.x, g_saved.y, want, g_saved.rot,
                                   g_saved.crtc_outputs.data(),
                                   (int)g_saved.crtc_outputs.size());
             XRRFreeScreenResources(res);

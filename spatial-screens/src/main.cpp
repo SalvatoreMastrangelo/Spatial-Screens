@@ -903,6 +903,23 @@ int main(int argc, char** argv) {
             Quat view_q = qconj(qmul(head_rc, trim));
             Vec3 hp_neg = qrot(view_q, { -hp.x, -hp.y, -hp.z });
 
+            // Painter's order, per frame: no depth buffer, and 6DoF lets the
+            // user walk around the rack — order by live head distance,
+            // farthest first, so the nearer screen wins where two overlap.
+            // Poses are eye-independent; both eyes reuse them.
+            struct SortedScreen { Quat q; Vec3 p; float d2; const ScreenInst* s; };
+            SortedScreen order[40];
+            int nscene = int(scene.size() < 40 ? scene.size() : 40);
+            for (int i = 0; i < nscene; i++) {
+                SortedScreen& e = order[i];
+                e.s = &scene[i];
+                scene_screen_pose(scene[i], rack_q, rack_p, rack_dist_scale, e.q, e.p);
+                float dx = e.p.x - hp.x, dy = e.p.y - hp.y, dz = e.p.z - hp.z;
+                e.d2 = dx * dx + dy * dy + dz * dz;
+            }
+            std::sort(order, order + nscene,
+                      [](const SortedScreen& a, const SortedScreen& b) { return a.d2 > b.d2; });
+
             // Build one eye's draw list. eye_off = view-space x shift (±IPD/2
             // in stereo, 0 in mono); it slides the camera and each head-locked
             // HUD element so both eyes fuse at their design depths.
@@ -915,12 +932,11 @@ int main(int argc, char** argv) {
                 mat_projection_vk(r, t, near_z, far_z, proj);
 
                 const float white[4] = { 1, 1, 1, 1 };
-                for (auto& s : scene) {
+                for (int i = 0; i < nscene; i++) {
                     if (nd >= 40) break;
-                    Quat sq; Vec3 sp;
-                    scene_screen_pose(s, rack_q, rack_p, rack_dist_scale, sq, sp);
+                    const ScreenInst& s = *order[i].s;
                     float model[16], vm[16], smvp[16];
-                    mat_from_pose(sq, sp, model);
+                    mat_from_pose(order[i].q, order[i].p, model);
                     mat_mul(view, model, vm);
                     mat_mul(proj, vm, smvp);
                     float aspect = multi ? s.aspect : cap_aspect;
@@ -1150,6 +1166,13 @@ int main(int argc, char** argv) {
     }
     save_state(app_state);
     printf("shutting down…\n");
+    // Panel back to 2D while the lease is still held: releasing the lease
+    // first makes X re-modeset the output, and the resulting DP retrain
+    // kills the restore's USB command (all 6 retries failed on hardware).
+    // With the link quiet the command lands first try; the mode change then
+    // drops our lease, which we were about to release anyway.
+    sbs_exit(g_provider, g_sbs_orig);
+    g_sbs_orig = -1;
     g_gestures.stop();
     tele.stop();
     if (cap) cap->stop();
@@ -1158,7 +1181,7 @@ int main(int argc, char** argv) {
     vkr_destroy(vk);
     if (sout.direct) direct_restore(dpy);          // now the server can re-enable the output
     else if (sout.window) XDestroyWindow(dpy, sout.window);
-    sdk_shutdown();                                // panel back to 2D, then SDK down
+    sdk_shutdown();                                // safety net for error paths; panel already 2D here
     XCloseDisplay(dpy);
     return 0;
 }
