@@ -52,7 +52,8 @@ Glasses-on spike 2026-07-05 (`docs/testing/2026-07-05-sbs-3d-spike-handoff.md`):
 - [x] Write the stereo design doc (spec of record: `docs/specs/2026-07-05-stereo-3d-design.md`)
 - [x] Implement multi-screen scene
 - [x] Implement stereo rendering + mode switch lifecycle
-- [ ] Glasses-on verification pass
+- [x] Glasses-on verification pass (2026-07-06, 8/8 — results in
+      `docs/testing/2026-07-06-stereo-3d-test-handoff.md`)
 - [ ] Merge to master
 
 ## Hardware verification session (next)
