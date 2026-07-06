@@ -60,4 +60,26 @@ Researched plan: [`phase2-spatial-screens.md`](phase2-spatial-screens.md). Summa
 - M3: done — portal/XShm capture chain, config + state files, WS telemetry to the
   phase-1 dashboard (spec: `docs/specs/2026-07-04-m3-remainder-design.md`).
   Hand-gesture control (pinch-drag, fist-hold) also merged.
+- Stereo/SBS multi-screen: done — merged 2026-07-06 (`feat/stereo-3d`, 8/8
+  hardware pass; design `docs/specs/2026-07-05-stereo-3d-design.md`).
 - Next: M4 preset & layout engine; M5 outreach.
+
+### Future ideas / possible additions (backlog)
+
+Forward-looking feature ideas, not yet scheduled. Extends the already-noted
+per-screen-placement + window-capture roadmap items in `feat-stereo-3d.md`.
+
+- **Decouple floating screens from physical displays.** Today each virtual
+  screen is a UV sub-rect of one captured framebuffer, so screens are tied to
+  slices of a physical external display. Instead, capture a single window (or
+  arbitrary source) per screen so each floating screen is an independent panel,
+  not bound 1:1 to a physical output. (Depends on per-window capture — the
+  "window capture = roadmap" item.)
+- **Per-screen gesture targeting.** Let the user pick which screen the
+  move/reposition gestures act on, so screens move independently; highlight the
+  selected one. Proposed selection gesture: index + middle fingers raised and
+  side by side, all other fingers closed in a fist.
+- **Vertical placement (raise/lower screens).** Allow placing screens higher or
+  lower in space, not just around a horizontal ring. When repositioned (fist-
+  hold), a screen always re-orients to face the user — e.g. a panel placed above
+  the user tilts down toward them ("screens above me, facing me").
