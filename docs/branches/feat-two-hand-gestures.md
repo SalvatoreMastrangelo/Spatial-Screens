@@ -100,7 +100,45 @@ sidecar) and the hand-overlay work.
       comment rewritten for the single-frame reality; (c) `main.cpp` header +
       runtime gesture-help text now describe either-hand + per-hand arm +
       two-hand grab.
-- [ ] Merge to main (master was deleted 2026-07-06; main is the sole mainline)
+- [x] **Integration merge with `main` — done (2026-07-06, commit `3b566ea`).**
+      `main` had moved far past the branch point: it absorbed `feat/stereo-3d`
+      (multi-screen **rack** model + **stereo SBS** per-eye rendering) and the
+      public-release restructure (SDK **fetched not vendored**). Both features
+      rewrote the same `main.cpp` gesture/screen/render subsystem, so this was a
+      real integration (not a fast-forward): 5 `main.cpp` conflict regions plus
+      auto-merged incompatible API changes. Resolved by re-expressing the
+      two-hand feature against the rack/stereo model:
+    - **Two-hand grab → rack**: reposition moves the rack origin `rack_p`;
+      resize sets `diag_in`/`scene[0].cfg.size` in single-screen mode and scales
+      `rack_size_scale` uniformly in multi-screen (rack) mode (`grab_scale0`
+      snapshot; ratio = `gr.diag/grab.size0`). **NEW v1 behavior — two-hand grab
+      in a multi-screen rack + stereo was unspecified by either design.** Chose a
+      conservative mapping; **needs hardware confirmation** (esp. rack-mode
+      resize feel and stereo per-eye alignment of the grabbed screen).
+    - **Single-hand pinch-drag** made multi-aware (`rack_dist_scale` vs
+      `distance`+`scene[0].cfg.distance`), matching main's keyboard path;
+      dropped the dead `anchor_p` forward-walk; `place_screen`→`place_rack`.
+    - **HUD into per-eye `build_eye`**: VO dot → bottom-center; single status
+      dot → two per-hand dots (bottom corners); single-hand overlay → two L/R
+      landmark panels. All head-locked elements carry `eye_off` (render in both
+      stereo eyes). Draw cap `draws[2][40]`→`[2][64]`.
+    - Clean build; **19 py + gesture-parse + gesture-manip + stereo-math green**
+      (main's stereo tests still pass — no regression).
+- [ ] **Combined hardware pass (stereo × two-hand) — REQUIRED before main moves.**
+      The two features were each hardware-verified separately but never together.
+      Verify on the glasses: (1) two-hand grab reposition/resize in single-screen
+      mode still feels right after the rack remap; (2) multi-screen rack mode
+      grab (new v1) is sane; (3) status dots + hand overlay render correctly in
+      **both stereo eyes** (per-eye `eye_off`); (4) single-hand gestures + the
+      earlier single-frame handedness fix still hold. Launch `./run.sh` (single
+      SDK client). SDK is now fetched — `sdk/fetch-sdk.sh` or copy from the
+      primary checkout if `sdk/include`/`sdk/lib` are absent.
+- [ ] **Fast-forward `main` to `3b566ea`** only after the combined hardware pass.
+      main is checked out in the primary worktree and is clean → a clean FF
+      (`git -C <primary> merge --ff-only feat/two-hand-gestures`); the primary's
+      history already contains "merge X into feature" commits (e.g. `dd9e99f`),
+      so this topology matches convention. (master was deleted 2026-07-06; main
+      is the sole mainline.)
 
 ### Review backlog (non-blocking — deferred to follow-up, not fixed pre-merge)
 
