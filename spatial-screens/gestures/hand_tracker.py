@@ -194,13 +194,16 @@ def build_landmarker():
     )
 
 
-def run_inference(sock, read_exact, landmarker):
+def run_inference(sock, read_exact, landmarker, landmarker_r=None, fusion=False):
+    import select as _select
+    from concurrent.futures import ThreadPoolExecutor
+
     import cv2
     import mediapipe as mp
     import numpy as np
     from classify import classify_pose, pinch_norm, pinch_pos, select_hand
 
-    def hand_dict(lm, handedness):
+    def hand_dict(lm, handedness, depth=None):
         return {
             "present": True,
             "handedness": handedness,
@@ -208,45 +211,58 @@ def run_inference(sock, read_exact, landmarker):
             "pinch_pos": pinch_pos(lm),
             "pose": classify_pose(lm),
             "landmarks": lm,
+            "depth": depth,
         }
 
-    last_ts = -1
+    def infer(landmarker_obj, plane, width, height, ts):
+        gray = np.frombuffer(plane, dtype=np.uint8).reshape(height, width)
+        rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        result = landmarker_obj.detect_for_video(mp_image, ts)
+        return [(result.handedness[i][0].category_name, _landmarks_to_pairs(lm))
+                for i, lm in enumerate(result.hand_landmarks)]
+
+    def readable():
+        return bool(_select.select([sock], [], [], 0)[0])
+
+    do_fusion = fusion and landmarker_r is not None
+    pool = ThreadPoolExecutor(max_workers=2) if do_fusion else None
+    last_ts_l = last_ts_r = -1
     while True:
-        frame = read_frame(read_exact)
+        frame = drain_to_latest(lambda: read_frame(read_exact), readable)
         if frame is None:
             break
         timestamp, width, height, fmt, planes = frame
-
         if fmt != FORMAT_GRAY8 or len(planes) < 1:
             print(f"hand_tracker: unexpected format {fmt}/{len(planes)} planes, "
                   f"skipping", file=sys.stderr)
             continue
 
-        # Single frame, both hands: run ONE landmarker (num_hands=2) on ONE camera
-        # image (the left plane) and split left/right by spatial x-position within
-        # that single frame (see classify.select_hand). Distinguishing hands
-        # across the two stereo cameras was tried and failed: parallax (~6 cm
-        # baseline) makes the cameras disagree on which side a near-center hand is
-        # on, so it appeared in both panels. One frame = one consistent x-axis =
-        # a hand is left OR right, never both. planes[1], if the C++ side still
-        # sends it, is unused here — reserved for future stereo fusion (which
-        # would add true depth; see docs/specs/2026-07-06-two-hand-gestures-design.md).
-        gray = np.frombuffer(planes[0], dtype=np.uint8).reshape(height, width)
-        rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-
-        ts = max(int(timestamp * 1000), last_ts + 1)  # must strictly increase
-        last_ts = ts
-        result = landmarker.detect_for_video(mp_image, ts)
-        hands = [
-            (result.handedness[i][0].category_name, _landmarks_to_pairs(lm))
-            for i, lm in enumerate(result.hand_landmarks)
-        ]
+        # detect_for_video needs a strictly-increasing timestamp PER landmarker.
+        ts_l = max(int(timestamp * 1000), last_ts_l + 1)
+        last_ts_l = ts_l
+        stereo = do_fusion and len(planes) >= 2
+        if stereo:
+            ts_r = max(int(timestamp * 1000), last_ts_r + 1)
+            last_ts_r = ts_r
+            fut_r = pool.submit(infer, landmarker_r, planes[1], width, height, ts_r)
+            hands = infer(landmarker, planes[0], width, height, ts_l)
+            try:
+                right_hands = fut_r.result()
+            except Exception as e:  # right inference is best-effort; never kill gestures
+                print(f"hand_tracker: right-eye inference failed ({e}); depth off "
+                      f"this frame", file=sys.stderr)
+                right_hands, stereo = None, False
+        else:
+            hands = infer(landmarker, planes[0], width, height, ts_l)
+            right_hands = None
 
         left_lm = select_hand(hands, "left")
         right_lm = select_hand(hands, "right")
-        left = hand_dict(left_lm, "left") if left_lm is not None else None
-        right = hand_dict(right_lm, "right") if right_lm is not None else None
+        depths = (fuse_depths({"left": left_lm, "right": right_lm}, right_hands)
+                  if stereo else {"left": None, "right": None})
+        left = hand_dict(left_lm, "left", depths["left"]) if left_lm is not None else None
+        right = hand_dict(right_lm, "right", depths["right"]) if right_lm is not None else None
         sock.sendall(encode_event(timestamp, left, right))
 
 
@@ -254,12 +270,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--socket", required=True)
     parser.add_argument("--echo", action="store_true",
-                         help="skip MediaPipe; just acknowledge frames (IPC smoke test)")
+                        help="skip MediaPipe; just acknowledge frames (IPC smoke test)")
+    parser.add_argument("--fusion", action="store_true",
+                        help="enable stereo depth fusion (2nd inference on the right plane)")
     args = parser.parse_args()
 
-    # Build the (slow-to-import/load) landmarker before connecting — see
+    # Build the (slow-to-import/load) landmarker(s) before connecting — see
     # build_landmarker()'s docstring for why ordering matters.
     landmarker = None if args.echo else build_landmarker()
+    landmarker_r = build_landmarker() if (args.fusion and not args.echo) else None
 
     sock = connect(args.socket)
     read_exact = make_reader(sock)
@@ -267,7 +286,7 @@ def main():
     if args.echo:
         run_echo(sock, read_exact)
     else:
-        run_inference(sock, read_exact, landmarker)
+        run_inference(sock, read_exact, landmarker, landmarker_r, args.fusion)
 
 
 if __name__ == "__main__":
