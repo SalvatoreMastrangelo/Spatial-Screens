@@ -27,7 +27,7 @@ Glasses-on spike 2026-07-05 (`docs/testing/2026-07-05-sbs-3d-spike-handoff.md`):
 ## Plan of record
 
 1. **Design doc** — `docs/specs/2026-07-05-stereo-3d-design.md` (written
-   2026-07-06, awaiting user review): "slice one framebuffer" — eDP-1
+   2026-07-06, spec of record): "slice one framebuffer" — eDP-1
    upscaled to 3840×2400 (`xrandr --scale`) and split into VS1..VS4 logical
    monitors (`--setmonitor`; run.sh owns setup + trap-EXIT restore); one XShm
    grab → one texture, screens = UV sub-rects; SBS 0x45 on startup / 0x44
@@ -49,11 +49,34 @@ Glasses-on spike 2026-07-05 (`docs/testing/2026-07-05-sbs-3d-spike-handoff.md`):
 ## Current state / next step
 
 - [x] Spike verified + committed (`e8f6d85`)
-- [ ] **NEXT: write the stereo design doc** (brainstorm → spec)
-- [ ] Implement multi-screen scene
-- [ ] Implement stereo rendering + mode switch lifecycle
+- [x] Write the stereo design doc (spec of record: `docs/specs/2026-07-05-stereo-3d-design.md`)
+- [x] Implement multi-screen scene
+- [x] Implement stereo rendering + mode switch lifecycle
 - [ ] Glasses-on verification pass
 - [ ] Merge to master
+
+## Hardware verification session (next)
+
+Preflight: `pkill viture-bridge; pgrep -af spatial-screens` (nothing may hold
+the SDK), glasses plugged + awake, `gnome-session-inhibit --inhibit idle sleep 3600 &`
+(NVIDIA idle-blank hang), recovery terminal on the laptop panel or
+`ssh sonmorri`.
+
+Run: `cd spatial-screens && make && ./run.sh`
+Panic if killed hard: `LD_LIBRARY_PATH=../sdk/lib/x86_64 ./sbs-spike --restore`
+and `xrandr --output DP-1 --set non-desktop 0 && xrandr --output DP-1 --auto`;
+run.sh's trap restores the workspace on its own.
+
+- [ ] 1. 0x45 lights up in-app; eyes-on depth separation between rack screens
+- [ ] 2. HUD dots/landmarks fuse comfortably (no ghosting)
+- [ ] 3. Sustained 90 Hz; measure real capture-hz ceiling at 3840x2400
+- [ ] 4. Mutter honors --scale + --setmonitor for a full session
+- [ ] 5. Hardware 2D/3D button under the lease → self-heal path works
+- [ ] 6. Restore paths: clean exit, SIGINT, kill -9 + sbs-spike --restore
+- [ ] 7. IPD calibration: far screen fuses without divergence; tune ipd-mm.
+       If depth reads INVERTED (near screens look far), the panel routes the
+       left half to the right eye — negate stereo_eye_offset's sign
+- [ ] 8. stereo=false mono multi-screen still renders correctly
 
 ## How to test
 
