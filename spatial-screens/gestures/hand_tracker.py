@@ -11,11 +11,13 @@ Standalone testing: python3 hand_tracker.py --socket /tmp/test.sock --echo
 import argparse
 import os
 import socket
+import statistics
 import sys
 import time
 import urllib.request
 
 from protocol import encode_event, read_frame
+from depth_fusion import robust_depth
 
 FORMAT_GRAY8 = 0
 
@@ -84,6 +86,59 @@ def make_reader(sock):
 
 def _no_hand_event(timestamp):
     return encode_event(timestamp, None, None)
+
+
+def match_right_hand(left_lm, right_hands, max_row_delta=0.15):
+    """Given the authoritative LEFT-image hand landmarks and the RIGHT-image
+    detections [(handedness, landmarks), ...], return the right-image landmarks
+    of the SAME physical hand, or None.
+
+    Under a nominally-rectified horizontal stereo pair, corresponding landmarks
+    share ~the same image row (y) and the right-image x is < the left-image x
+    (positive disparity). Pick the right hand with the smallest mean |dy| that
+    also has positive mean disparity, within max_row_delta."""
+    best, best_dy = None, max_row_delta
+    for _label, rlm in right_hands:
+        dy = statistics.mean(abs(l[1] - r[1]) for l, r in zip(left_lm, rlm))
+        disp = statistics.mean(l[0] - r[0] for l, r in zip(left_lm, rlm))
+        if disp <= 0:
+            continue
+        if dy < best_dy:
+            best, best_dy = rlm, dy
+    return best
+
+
+def fuse_depths(user_hands, right_hands):
+    """user_hands: {"left": lm|None, "right": lm|None} — authoritative, from the
+    LEFT image. right_hands: [(handedness, lm), ...] from the RIGHT image.
+    Returns {"left": depth|None, "right": depth|None} (meters)."""
+    out = {}
+    for side, llm in user_hands.items():
+        if llm is None or not right_hands:
+            out[side] = None
+            continue
+        rlm = match_right_hand(llm, right_hands)
+        out[side] = robust_depth(llm, rlm) if rlm is not None else None
+    return out
+
+
+def drain_to_latest(read_frame_fn, readable_fn):
+    """Read frames until the socket would block, returning the newest (or None
+    on EOF). readable_fn() -> bool says whether another frame is buffered.
+
+    Prevents backlog: a slow 2x inference can't accumulate a queue that fills
+    the socket buffer and trips the C++ sender's 200 ms send deadline (which
+    would permanently disable gesture control). Stale frames are silently
+    dropped — benign for a depth channel."""
+    frame = read_frame_fn()
+    if frame is None:
+        return None
+    while readable_fn():
+        nxt = read_frame_fn()
+        if nxt is None:
+            break
+        frame = nxt
+    return frame
 
 
 def run_echo(sock, read_exact):
