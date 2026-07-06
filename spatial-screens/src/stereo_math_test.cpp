@@ -44,6 +44,15 @@ static void test_config_keys() {
     CHECK(!set_option(o, "screen.0.monitor", "x")); // N is 1-based
     CHECK(!set_option(o, "screen.17.monitor", "x")); // cap 16
     CHECK(!set_option(o, "screen.monitor", "x"));   // missing index
+
+    // Regression: unknown field must not resize o.screens.
+    Options o2;
+    CHECK(!set_option(o2, "screen.5.bogus", "1"));
+    CHECK(o2.screens.empty());
+    CHECK(!set_option(o2, "screen.0.monitor", "x"));
+    CHECK(o2.screens.empty());
+    CHECK(!set_option(o2, "screen.17.monitor", "x"));
+    CHECK(o2.screens.empty());
 }
 
 static void test_scene_build() {

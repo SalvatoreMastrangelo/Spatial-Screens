@@ -99,15 +99,19 @@ static bool set_screen_option(Options& o, const std::string& k, const std::strin
     if (dot2 == std::string::npos || dot2 == 7) return false;
     int n = atoi(k.substr(7, dot2 - 7).c_str());
     if (n < 1 || n > 16) return false;
+    std::string f = k.substr(dot2 + 1);
+    // Validate field name BEFORE resizing o.screens.
+    if (f != "monitor" && f != "azimuth" && f != "elevation" &&
+        f != "distance" && f != "size") {
+        return false;
+    }
     if (size_t(n) > o.screens.size()) o.screens.resize(size_t(n));
     ScreenCfg& s = o.screens[size_t(n) - 1];
-    std::string f = k.substr(dot2 + 1);
     if (f == "monitor") s.monitor = v;
     else if (f == "azimuth") parse_float(k, v, s.azimuth);
     else if (f == "elevation") parse_float(k, v, s.elevation);
     else if (f == "distance") parse_float(k, v, s.distance);
     else if (f == "size") parse_float(k, v, s.size);
-    else return false;
     return true;
 }
 
