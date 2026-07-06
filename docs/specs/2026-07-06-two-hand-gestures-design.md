@@ -215,16 +215,17 @@ Screen distance is untouched during a grab (the one-handed drag owns depth).
   inference path.
 - **Two-hand rotation** — angle between the two pinch points → screen yaw/roll,
   a natural add on top of the existing grab snapshot.
-- **Downscaled grayscale inference** — run MediaPipe on lower-resolution
-  (downsampled) grayscale frames to cut per-inference cost. Directly targets the
-  2× inference-cost risk of dual-camera tracking: hand landmarks are robust to
-  moderate downscaling, so halving each dimension (~4× fewer pixels) could
-  roughly restore single-camera compute while keeping both hands. Levers to
-  explore: downscale in the C++ sender (less socket payload too) vs. in the
-  sidecar; find the resolution floor where pinch/pose classification still
-  holds; possibly downscale only for detection and keep full-res for the
-  landmark refinement. Pairs with, or is an alternative to, the single-frame
-  `num_hands=2` fallback in "Error handling / risks".
+- **Downscaled grayscale inference** — *investigated on hardware 2026-07-06,
+  does NOT help.* MediaPipe HandLandmarker resizes every input to fixed internal
+  model resolutions, so feeding it lower-res frames leaves inference time flat
+  (measured ~24–27 ms from 640×480 down to 160×120; per-frame preprocessing is
+  already ~0.3 ms). Source downscaling only saves socket/copy overhead, which is
+  not the bottleneck. **What actually worked:** run the two independent
+  landmarker inferences *concurrently* (one thread each) — MediaPipe releases
+  the GIL during its C++ graph, measured **1.74×** on hardware (~52 ms → ~30 ms
+  per two-plane cycle), now implemented in `run_inference`. This keeps
+  dual-camera per-hand tracking at the 15 Hz target, so neither downscaling nor
+  the single-frame `num_hands=2` fallback is needed.
 
 ## Files touched
 
