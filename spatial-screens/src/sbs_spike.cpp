@@ -107,6 +107,7 @@ int main(int argc, char** argv) {
     int explicit_mode = -1;     // --mode 0xNN : use set_display_mode instead of the toggle
     int hold_s = 20;            // --hold N : seconds in 3D before restoring
     bool no_restore = false;    // --no-restore : leave the panel in 3D (dangerous)
+    bool restore_only = false;  // --restore : panic flag, put panel back to 2D and exit
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--mode") && i + 1 < argc)
@@ -115,8 +116,10 @@ int main(int argc, char** argv) {
             hold_s = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--no-restore"))
             no_restore = true;
+        else if (!strcmp(argv[i], "--restore"))
+            restore_only = true;
         else {
-            printf("usage: %s [--mode 0xNN] [--hold N] [--no-restore]\n", argv[0]);
+            printf("usage: %s [--mode 0xNN] [--hold N] [--no-restore] [--restore]\n", argv[0]);
             return 2;
         }
     }
@@ -156,6 +159,17 @@ int main(int argc, char** argv) {
         return 1;
     }
     printf("SDK started (pid 0x%04x, Carina 6DoF)\n\n", pid);
+
+    if (restore_only) {
+        // Panic path: kill -9'd sessions leave the panel in SBS. Just put the
+        // native 2D mode back and get out.
+        using viture::protocol::DisplayMode::MODE_1920_1200_120HZ;
+        int rc2 = xr_device_provider_set_display_mode(g_provider, MODE_1920_1200_120HZ);
+        printf("--restore: set_display_mode(0x44) -> rc %d (%s)\n", rc2, rc_name(rc2));
+        xr_device_provider_shutdown(g_provider);
+        xr_device_provider_destroy(g_provider);
+        return rc2 == 0 ? 0 : 1;
+    }
 
     // -- record where we started so we can put it back exactly --
     int orig = xr_device_provider_get_display_mode(g_provider);

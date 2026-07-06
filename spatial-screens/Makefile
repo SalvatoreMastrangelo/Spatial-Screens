@@ -17,7 +17,8 @@ LDFLAGS := -L$(SDK_LIB) -lglasses $(VK_LIBS) -lpthread $(CAP_LIBS) \
 SHADER_HDRS := shaders/quad.vert.spv.h shaders/quad.frag.spv.h
 OBJS := src/main.o src/vk_renderer.o src/vk_surface.o src/gesture_client.o \
         src/gesture_parse.o src/scene.o \
-        src/capture.o src/capture_xshm.o src/config.o src/capture_portal.o src/telemetry.o
+        src/capture.o src/capture_xshm.o src/config.o src/capture_portal.o src/telemetry.o \
+        src/sbs_mode.o
 
 spatial-screens: $(OBJS)
 	$(CXX) $(OBJS) -o $@ $(LDFLAGS)
@@ -54,6 +55,9 @@ src/config.o: src/config.cpp src/config.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 src/telemetry.o: src/telemetry.cpp src/telemetry.h ../bridge/ws_server.hpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+src/sbs_mode.o: src/sbs_mode.cpp src/sbs_mode.h src/vk_surface.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 src/main.o: src/gesture_client.h src/capture.h src/config.h src/telemetry.h src/capture_portal.h
