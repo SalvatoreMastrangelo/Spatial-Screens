@@ -1039,10 +1039,10 @@ int main(int argc, char** argv) {
             refresh_projection();
 
         // ---- render
-        // Draw-list caps tie together, per eye: config's 16-screen max + VO
-        // dot + 2 per-hand status dots + 2 hands x 21 landmarks = 61 <= 64.
-        // Bump any of those caps and this must grow too.
-        QuadDraw draws[2][64];
+        // Draw-list caps tie together, per eye: config's 16-screen max
+        // + 4 active-screen border bars + VO dot + 2 per-hand status dots
+        // + 2 hands x 21 landmarks = 65 <= 72. Bump any cap and this grows too.
+        QuadDraw draws[2][72];
         int ndraw[2] = {0, 0};
         if (have_pose && anchored) {
             // view = trim ⊗ inverse(recentered head pose)
@@ -1081,7 +1081,7 @@ int main(int argc, char** argv) {
 
                 const float white[4] = { 1, 1, 1, 1 };
                 for (int i = 0; i < nscene; i++) {
-                    if (nd >= 64) break;
+                    if (nd >= 72) break;
                     const ScreenInst& s = *order[i].s;
                     float model[16], vm[16], smvp[16];
                     mat_from_pose(order[i].q, order[i].p, model);
@@ -1097,6 +1097,31 @@ int main(int argc, char** argv) {
                     d.rect[0] = 0; d.rect[1] = 0; d.rect[2] = w2; d.rect[3] = h2;
                     memcpy(d.uv, s.uv, sizeof(s.uv));
                     d.textured = true;
+                    // Selected-screen highlight: a green frame OUTSIDE the
+                    // content rect [±w2,±h2], coplanar with the screen (shares
+                    // smvp) so it gets correct per-eye stereo and never overlaps
+                    // the content. order[] is the sorted draw order; match the
+                    // active screen by identity, not index.
+                    if (active_screen >= 0 && order[i].s == &scene[active_screen]) {
+                        const float sel_green[4] = { 0.20f, 0.90f, 0.30f, 1.f };
+                        const float b = SELECT_BORDER_M;
+                        // top, bottom, left, right (top/bottom widened by b to fill corners)
+                        const float bars[4][4] = {
+                            { 0.f,        h2 + b * 0.5f, w2 + b,      b * 0.5f },
+                            { 0.f,      -(h2 + b * 0.5f), w2 + b,      b * 0.5f },
+                            { -(w2 + b * 0.5f), 0.f,      b * 0.5f,    h2       },
+                            {  (w2 + b * 0.5f), 0.f,      b * 0.5f,    h2       },
+                        };
+                        for (int e = 0; e < 4 && nd < 72; e++) {
+                            QuadDraw& bd = dl[nd++];
+                            memcpy(bd.mvp, smvp, sizeof(smvp));
+                            memcpy(bd.color, sel_green, 4 * sizeof(float));
+                            bd.rect[0] = bars[e][0]; bd.rect[1] = bars[e][1];
+                            bd.rect[2] = bars[e][2]; bd.rect[3] = bars[e][3];
+                            bd.textured = false;
+                            bd.circle = false;
+                        }
+                    }
                 }
                 // `mvp` below (HUD blocks) previously reused the screen's matrix
                 // chain; the HUD only ever used proj-based matrices, which are
@@ -1182,7 +1207,7 @@ int main(int argc, char** argv) {
                         // Unarmed: the whole hand is drawn mildly transparent;
                         // arming (open palm) makes it opaque.
                         const float ov_alpha = armed[hnd] ? 1.f : 0.45f;
-                        for (int i = 0; i < 21 && nd < 64; i++) {
+                        for (int i = 0; i < 21 && nd < 72; i++) {
                             float nx = h.landmarks[i][0];
                             float ny = h.landmarks[i][1];
                             // Normalized image coords -> panel-local. Image y is
