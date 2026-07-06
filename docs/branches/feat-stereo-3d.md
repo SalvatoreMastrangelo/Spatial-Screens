@@ -26,12 +26,17 @@ Glasses-on spike 2026-07-05 (`docs/testing/2026-07-05-sbs-3d-spike-handoff.md`):
 
 ## Plan of record
 
-1. **Design doc** — `docs/specs/2026-07-05-stereo-3d-design.md` (in progress):
-   multi-screen scene graph with per-screen distance/pose; switch to 0x45 on
-   startup + restore 0x44 on exit (incl. crash paths); two eye views into the
-   3840-wide framebuffer (viewports `[0..1920]` / `[1920..3840]`, camera
-   ±IPD/2, off-axis frustum); IPD as a config value (no SDK API for it);
-   handle desktop-layout reflow around the switch.
+1. **Design doc** — `docs/specs/2026-07-05-stereo-3d-design.md` (written
+   2026-07-06, awaiting user review): "slice one framebuffer" — eDP-1
+   upscaled to 3840×2400 (`xrandr --scale`) and split into VS1..VS4 logical
+   monitors (`--setmonitor`; run.sh owns setup + trap-EXIT restore); one XShm
+   grab → one texture, screens = UV sub-rects; SBS 0x45 on startup / 0x44
+   restore (app owns; `sbs-spike --restore` = panic tool); two-viewport
+   stereo, parallel frusta, ±IPD/2 (`ipd-mm`, default 63); runtime
+   mono↔stereo adaptation off swapchain OUT_OF_DATE; mono fallback on any
+   stereo failure. Free per-screen placement + window capture = roadmap.
+   NOTE: work continues in worktree `.claude/worktrees/stereo-3d` — the main
+   checkout hosts a parallel session (feat/two-hand-gestures).
 2. Implementation per the design doc (est. ~2–4 days).
 3. Hardware verification pass, then merge to master.
 
