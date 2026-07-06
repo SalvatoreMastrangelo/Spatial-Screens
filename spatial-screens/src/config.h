@@ -29,7 +29,7 @@ struct Options {
     float smooth_ori = 0.40f;
     bool window = false;
     int ws_port = 8765;                   // 0 = telemetry disabled
-    bool stereo = false;                  // SBS 3D; default flips true once the stereo path lands
+    bool stereo = true;                   // SBS 3D on the glasses; false = legacy mono
     float ipd_mm = 63.f;                  // interpupillary distance (no SDK API for it)
     std::string workspace = "2x2";        // run.sh logical-monitor grid ("off" = don't touch)
     std::vector<ScreenCfg> screens;       // empty = default rack from monitor count

@@ -14,7 +14,7 @@ static int failures = 0;
 
 static void test_config_keys() {
     Options o;
-    CHECK(o.stereo == false);          // flips to true in the stereo task
+    CHECK(o.stereo == true);           // default: SBS 3D on the glasses
     CHECK(std::fabs(o.ipd_mm - 63.f) < 1e-6f);
     CHECK(o.workspace == "2x2");
     CHECK(o.screens.empty());

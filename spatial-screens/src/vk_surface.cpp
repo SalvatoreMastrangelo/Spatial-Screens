@@ -211,7 +211,8 @@ bool direct_acquire(Display* dpy, VkInstance inst, RROutput out_id, SurfaceOut& 
     g_saved.phys = phys;
     g_saved.display = display;
 
-    // Mode: native resolution at the highest refresh (spec: 1920x1200@120).
+    // Mode: prefer the exact SBS 3840x1200 panel (stereo); else largest area
+    // at the highest refresh (mono, e.g. 1920x1200@120).
     uint32_t nmode = 0;
     vkGetDisplayModePropertiesKHR(phys, display, &nmode, nullptr);
     std::vector<VkDisplayModePropertiesKHR> modes(nmode);
@@ -226,6 +227,14 @@ bool direct_acquire(Display* dpy, VkInstance inst, RROutput out_id, SurfaceOut& 
     for (auto& m : modes) {
         uint32_t a = m.parameters.visibleRegion.width * m.parameters.visibleRegion.height;
         uint32_t b = best.parameters.visibleRegion.width * best.parameters.visibleRegion.height;
+        // Exact SBS mode wins outright (belt and braces for stereo: the
+        // largest-area rule would also pick it, but never rely on that).
+        bool m_sbs = m.parameters.visibleRegion.width == 3840 &&
+                     m.parameters.visibleRegion.height == 1200;
+        bool b_sbs = best.parameters.visibleRegion.width == 3840 &&
+                     best.parameters.visibleRegion.height == 1200;
+        if (m_sbs && !b_sbs) { best = m; continue; }
+        if (b_sbs && !m_sbs) continue;
         if (a > b || (a == b && m.parameters.refreshRate > best.parameters.refreshRate))
             best = m;
     }

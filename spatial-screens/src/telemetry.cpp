@@ -56,16 +56,18 @@ void Telemetry::send_pose(const float p[3], const float q[4], double t_s) {
 }
 
 void Telemetry::send_app(float fps, bool sixdof, bool anchored, float distance,
-                         float size_in, const char* backend, bool direct, int rss_mb) {
+                         float size_in, const char* backend, bool direct, int rss_mb,
+                         bool stereo, int screens) {
     if (!enabled_) return;
     long t = now_ms();
     if (t - last_app_ms_ < 500) return;
     last_app_ms_ = t;
     char buf[512];
     snprintf(buf, sizeof(buf),
-             R"({"type":"app","fps":%.1f,"sixdof":%s,"anchored":%s,"distance":%.2f,"size":%.0f,"backend":"%s","direct":%s,"rss":%d})",
+             R"({"type":"app","fps":%.1f,"sixdof":%s,"anchored":%s,"distance":%.2f,"size":%.0f,"backend":"%s","direct":%s,"rss":%d,"stereo":%s,"screens":%d})",
              fps, sixdof ? "true" : "false", anchored ? "true" : "false",
-             distance, size_in, backend, direct ? "true" : "false", rss_mb);
+             distance, size_in, backend, direct ? "true" : "false", rss_mb,
+             stereo ? "true" : "false", screens);
     ws_.broadcast(buf);
 }
 

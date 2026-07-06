@@ -56,6 +56,7 @@
 #include "telemetry.h"
 #include "sbs_mode.h"
 #include "scene.h"
+#include "stereo.h"
 
 // -------------------------------------------------------- cursor overlay ----
 // Neither capture path delivers the pointer (mutter on X11 ignores the
@@ -574,16 +575,29 @@ int main(int argc, char** argv) {
     tele.log("info", g_gestures.enabled() ? "gesture sidecar connected"
                                           : "gesture sidecar unavailable");
 
-    // -- projection from the glasses' 52-degree diagonal FOV (16:10 panel)
+    // -- projection from the glasses' 52-degree diagonal FOV (16:10 panel).
+    // Stereo: each eye is a full-FOV 1920x1200 panel — frustum from HALF the
+    // swapchain width. Derived values refresh whenever the extent changes
+    // (window resize, panel mode change under the lease).
     const float DIAG_FOV = 52.f;
-    // In direct mode the swapchain extent is authoritative (mode may differ
-    // from the desktop rect we detected).
-    if (sout.direct) { glasses.w = int(vk.extent.width); glasses.h = int(vk.extent.height); }
-    float diag_px = std::sqrt(float(glasses.w * glasses.w + glasses.h * glasses.h));
-    float half = std::tan(DIAG_FOV * float(M_PI) / 360.f);
     float near_z = 0.1f, far_z = 100.f;
-    float r = half * glasses.w / diag_px * near_z;
-    float t = half * glasses.h / diag_px * near_z;
+    float r = 0, t = 0;
+    bool stereo_active = false;
+    VkExtent2D known_extent{0, 0};
+    auto refresh_projection = [&]() {
+        if (sout.direct) { glasses.w = int(vk.extent.width); glasses.h = int(vk.extent.height); }
+        // Direct: stereo iff the scanned-out mode is SBS-wide. Window: honor
+        // the config (debug SBS halves in a desktop window).
+        stereo_active = o.stereo &&
+            (sout.direct ? vk.extent.width >= 2 * vk.extent.height : true);
+        uint32_t eye_w = stereo_active ? vk.extent.width / 2 : vk.extent.width;
+        stereo_eye_frustum(eye_w, vk.extent.height, DIAG_FOV, near_z, r, t);
+        known_extent = vk.extent;
+        printf("render: %s, eye %ux%u\n", stereo_active ? "stereo (SBS)" : "mono",
+               eye_w, vk.extent.height);
+    };
+    refresh_projection();
+    float ipd_m = o.ipd_mm * 0.001f;
 
     // -- screen anchor state
     Quat head_q; Vec3 head_p;
@@ -878,134 +892,162 @@ int main(int argc, char** argv) {
             }
         }
 
+        // Extent changed (swapchain rebuilt — e.g. a panel-mode toggle under
+        // the lease) — re-derive the per-eye projection and render path.
+        if (vk.extent.width != known_extent.width || vk.extent.height != known_extent.height)
+            refresh_projection();
+
         // ---- render
-        QuadDraw draws[40];
-        int ndraw = 0;
+        // Draw-list caps tie together: config's 16-screen max + 2 HUD dots +
+        // 21 hand landmarks = 39 <= 40. Bump any cap and this must grow too.
+        QuadDraw draws[2][40];
+        int ndraw[2] = {0, 0};
         if (have_pose && anchored) {
             // view = trim ⊗ inverse(recentered head pose)
             Quat head_rc = qmul(qconj(ori_offset), head_q);
             Vec3 hp = qrot(qconj(ori_offset), head_p);
             Quat view_q = qconj(qmul(head_rc, trim));
             Vec3 hp_neg = qrot(view_q, { -hp.x, -hp.y, -hp.z });
-            float view[16], proj[16];
-            mat_from_pose(view_q, hp_neg, view);
-            mat_projection_vk(r, t, near_z, far_z, proj);
 
-            const float white[4] = { 1, 1, 1, 1 };
-            for (auto& s : scene) {
-                Quat sq; Vec3 sp;
-                scene_screen_pose(s, rack_q, rack_p, rack_dist_scale, sq, sp);
-                float model[16], vm[16], smvp[16];
-                mat_from_pose(sq, sp, model);
-                mat_mul(view, model, vm);
-                mat_mul(proj, vm, smvp);
-                float aspect = multi ? s.aspect : cap_aspect;
-                float diag_m = s.cfg.size * (multi ? rack_size_scale : 1.f) * 0.0254f;
-                float w2 = diag_m * aspect / std::sqrt(1 + aspect * aspect) * 0.5f;
-                float h2 = diag_m / std::sqrt(1 + aspect * aspect) * 0.5f;
-                QuadDraw& d = draws[ndraw++];
-                memcpy(d.mvp, smvp, sizeof(smvp));
-                memcpy(d.color, white, 4 * sizeof(float));
-                d.rect[0] = 0; d.rect[1] = 0; d.rect[2] = w2; d.rect[3] = h2;
-                memcpy(d.uv, s.uv, sizeof(s.uv));
-                d.textured = true;
-            }
-            // `mvp` below (HUD blocks) previously reused the screen's matrix
-            // chain; the HUD only ever used proj-based matrices, which are
-            // built inline there already — no change needed.
+            // Build one eye's draw list. eye_off = view-space x shift (±IPD/2
+            // in stereo, 0 in mono); it slides the camera and each head-locked
+            // HUD element so both eyes fuse at their design depths.
+            auto build_eye = [&](int eye, float eye_off) {
+                QuadDraw* dl = draws[eye];
+                int& nd = ndraw[eye];
+                float view[16], proj[16];
+                mat_from_pose(view_q, hp_neg, view);
+                view[12] += eye_off;                    // camera ±IPD/2, view space
+                mat_projection_vk(r, t, near_z, far_z, proj);
 
-            // Head-locked tracking-status dot (replaced the old border
-            // frame): blue = 6DoF live, orange = positional tracking frozen
-            // (orientation-only). Fixed in the lower-right of the view —
-            // mvp is projection * translate only, no world transform.
-            const float live[4] = { 0.35f, 0.76f, 1.f, 1.f };
-            const float frozen[4] = { 1.f, 0.55f, 0.2f, 1.f };
-            const float DOT_Z = 0.5f;          // meters in front of the eye
-            float tan_r = r / near_z, tan_t = t / near_z;
-            float eye[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
-                              0.95f * tan_r * DOT_Z, -0.95f * tan_t * DOT_Z, -DOT_Z, 1 };
-            QuadDraw& d = draws[ndraw++];
-            mat_mul(proj, eye, d.mvp);
-            memcpy(d.color, sixdof_live ? live : frozen, 4 * sizeof(float));
-            float dot_r = 0.0045f * DOT_Z;     // ~0.5 degrees apparent size
-            d.rect[0] = 0; d.rect[1] = 0; d.rect[2] = dot_r; d.rect[3] = dot_r;
-            d.textured = false;
-            d.circle = true;
-
-            // Shared "pinch active" green — the pinch-status dot and the
-            // fingertip highlight must use the same green (design: the two
-            // feedback channels agree).
-            const float status_green[4] = { 0.20f, 0.90f, 0.30f, 1.f };
-
-            // Pinch/arm-status dot, just left of the VO tracking-status dot (at
-            // x-factor 0.95). Only shown while the gesture pipeline is live (a
-            // grey dot with no sidecar would falsely imply "running, no hand
-            // seen"). States: grey = no hand, amber = hand seen but not armed,
-            // blue = armed (open palm seen), green = armed + pinching.
-            if (g_gestures.enabled()) {
-                const float grey[4]  = { 0.5f, 0.5f, 0.5f, 1.f };
-                const float amber[4] = { 1.f, 0.65f, 0.1f, 1.f };
-                const float blue[4]  = { 0.30f, 0.55f, 1.f, 1.f };
-                const float* pcol = !gev.present   ? grey
-                                  : !gestures_armed ? amber
-                                  : (gev.pinching ? status_green : blue);
-                float peye[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
-                                   0.90f * tan_r * DOT_Z, -0.95f * tan_t * DOT_Z, -DOT_Z, 1 };
-                QuadDraw& pd = draws[ndraw++];
-                mat_mul(proj, peye, pd.mvp);
-                memcpy(pd.color, pcol, 4 * sizeof(float));
-                pd.rect[0] = 0; pd.rect[1] = 0; pd.rect[2] = dot_r; pd.rect[3] = dot_r;
-                pd.textured = false;
-                pd.circle = true;
-            }
-
-            // Hand-landmark overlay: 21 dots in a head-locked lower-left panel,
-            // shown only while a hand is actually seen. One shared panel mvp;
-            // each landmark is a different rect center (the quad shader builds
-            // the quad from rect.xy ± rect.zw), so no per-dot matrix. Thumb tip
-            // (4) and index tip (8) — the pair the pinch is measured between —
-            // are yellow, turning green while pinching.
-            if (g_gestures.enabled() && gev.present && gev.has_landmarks) {
-                int cw = g_cam_w.load(std::memory_order_relaxed);
-                int ch = g_cam_h.load(std::memory_order_relaxed);
-                float aspect = (cw > 0 && ch > 0) ? float(cw) / float(ch) : 4.f / 3.f;
-                const float PANEL_H = 0.09f * DOT_Z;        // half-height (~10° tall)
-                const float PANEL_W = PANEL_H * aspect;     // aspect-preserved half-width
-                float leye[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
-                                   -0.55f * tan_r * DOT_Z, -0.45f * tan_t * DOT_Z, -DOT_Z, 1 };
-                float panel_mvp[16];
-                mat_mul(proj, leye, panel_mvp);
-                const float lm_col[4] = { 0.40f, 0.90f, 1.00f, 1.f }; // soft cyan
-                const float tip[4]    = { 1.00f, 0.85f, 0.10f, 1.f }; // yellow (thumb/index tip)
-                const float lm_r = 0.0033f * DOT_Z;  // ~0.35 degrees apparent size (very thin)
-                // Unarmed: the whole hand is drawn mildly transparent; arming
-                // (open palm) makes it opaque. Fingertips go green only when the
-                // pinch is actually actionable (armed && pinching).
-                const float ov_alpha = gestures_armed ? 1.f : 0.45f;
-                for (int i = 0; i < 21 && ndraw < 40; i++) {
-                    float nx = gev.landmarks[i][0];
-                    float ny = gev.landmarks[i][1];
-                    // Normalized image coords -> panel-local. Image y is down,
-                    // eye-space y is up, so negate y. x is mapped directly; if
-                    // the hand reads left-right mirrored on hardware, change
-                    // (nx - 0.5f) to (0.5f - nx) here.
-                    float lx =  (nx - 0.5f) * 2.f * PANEL_W;
-                    float ly = -(ny - 0.5f) * 2.f * PANEL_H;
-                    const float* base = (i == 4 || i == 8)
-                                          ? ((gestures_armed && gev.pinching) ? status_green : tip)
-                                          : lm_col;
-                    float col[4] = { base[0], base[1], base[2], ov_alpha };
-                    QuadDraw& ld = draws[ndraw++];
-                    memcpy(ld.mvp, panel_mvp, sizeof(panel_mvp));
-                    memcpy(ld.color, col, 4 * sizeof(float));
-                    ld.rect[0] = lx; ld.rect[1] = ly; ld.rect[2] = lm_r; ld.rect[3] = lm_r;
-                    ld.textured = false;
-                    ld.circle = true;
+                const float white[4] = { 1, 1, 1, 1 };
+                for (auto& s : scene) {
+                    if (nd >= 40) break;
+                    Quat sq; Vec3 sp;
+                    scene_screen_pose(s, rack_q, rack_p, rack_dist_scale, sq, sp);
+                    float model[16], vm[16], smvp[16];
+                    mat_from_pose(sq, sp, model);
+                    mat_mul(view, model, vm);
+                    mat_mul(proj, vm, smvp);
+                    float aspect = multi ? s.aspect : cap_aspect;
+                    float diag_m = s.cfg.size * (multi ? rack_size_scale : 1.f) * 0.0254f;
+                    float w2 = diag_m * aspect / std::sqrt(1 + aspect * aspect) * 0.5f;
+                    float h2 = diag_m / std::sqrt(1 + aspect * aspect) * 0.5f;
+                    QuadDraw& d = dl[nd++];
+                    memcpy(d.mvp, smvp, sizeof(smvp));
+                    memcpy(d.color, white, 4 * sizeof(float));
+                    d.rect[0] = 0; d.rect[1] = 0; d.rect[2] = w2; d.rect[3] = h2;
+                    memcpy(d.uv, s.uv, sizeof(s.uv));
+                    d.textured = true;
                 }
+                // `mvp` below (HUD blocks) previously reused the screen's matrix
+                // chain; the HUD only ever used proj-based matrices, which are
+                // built inline there already — no change needed.
+
+                // Head-locked tracking-status dot (replaced the old border
+                // frame): blue = 6DoF live, orange = positional tracking frozen
+                // (orientation-only). Fixed in the lower-right of the view —
+                // mvp is projection * translate only, no world transform.
+                const float live[4] = { 0.35f, 0.76f, 1.f, 1.f };
+                const float frozen[4] = { 1.f, 0.55f, 0.2f, 1.f };
+                const float DOT_Z = 0.5f;          // meters in front of the eye
+                float tan_r = r / near_z, tan_t = t / near_z;
+                float eye_m[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
+                                    0.95f * tan_r * DOT_Z + eye_off, -0.95f * tan_t * DOT_Z, -DOT_Z, 1 };
+                QuadDraw& d = dl[nd++];
+                mat_mul(proj, eye_m, d.mvp);
+                memcpy(d.color, sixdof_live ? live : frozen, 4 * sizeof(float));
+                float dot_r = 0.0045f * DOT_Z;     // ~0.5 degrees apparent size
+                d.rect[0] = 0; d.rect[1] = 0; d.rect[2] = dot_r; d.rect[3] = dot_r;
+                d.textured = false;
+                d.circle = true;
+
+                // Shared "pinch active" green — the pinch-status dot and the
+                // fingertip highlight must use the same green (design: the two
+                // feedback channels agree).
+                const float status_green[4] = { 0.20f, 0.90f, 0.30f, 1.f };
+
+                // Pinch/arm-status dot, just left of the VO tracking-status dot (at
+                // x-factor 0.95). Only shown while the gesture pipeline is live (a
+                // grey dot with no sidecar would falsely imply "running, no hand
+                // seen"). States: grey = no hand, amber = hand seen but not armed,
+                // blue = armed (open palm seen), green = armed + pinching.
+                if (g_gestures.enabled()) {
+                    const float grey[4]  = { 0.5f, 0.5f, 0.5f, 1.f };
+                    const float amber[4] = { 1.f, 0.65f, 0.1f, 1.f };
+                    const float blue[4]  = { 0.30f, 0.55f, 1.f, 1.f };
+                    const float* pcol = !gev.present   ? grey
+                                      : !gestures_armed ? amber
+                                      : (gev.pinching ? status_green : blue);
+                    float peye[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
+                                       0.90f * tan_r * DOT_Z + eye_off, -0.95f * tan_t * DOT_Z, -DOT_Z, 1 };
+                    QuadDraw& pd = dl[nd++];
+                    mat_mul(proj, peye, pd.mvp);
+                    memcpy(pd.color, pcol, 4 * sizeof(float));
+                    pd.rect[0] = 0; pd.rect[1] = 0; pd.rect[2] = dot_r; pd.rect[3] = dot_r;
+                    pd.textured = false;
+                    pd.circle = true;
+                }
+
+                // Hand-landmark overlay: 21 dots in a head-locked lower-left panel,
+                // shown only while a hand is actually seen. One shared panel mvp;
+                // each landmark is a different rect center (the quad shader builds
+                // the quad from rect.xy ± rect.zw), so no per-dot matrix. Thumb tip
+                // (4) and index tip (8) — the pair the pinch is measured between —
+                // are yellow, turning green while pinching.
+                if (g_gestures.enabled() && gev.present && gev.has_landmarks) {
+                    int cw = g_cam_w.load(std::memory_order_relaxed);
+                    int ch = g_cam_h.load(std::memory_order_relaxed);
+                    float aspect = (cw > 0 && ch > 0) ? float(cw) / float(ch) : 4.f / 3.f;
+                    const float PANEL_H = 0.09f * DOT_Z;        // half-height (~10° tall)
+                    const float PANEL_W = PANEL_H * aspect;     // aspect-preserved half-width
+                    float leye[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
+                                       -0.55f * tan_r * DOT_Z + eye_off, -0.45f * tan_t * DOT_Z, -DOT_Z, 1 };
+                    float panel_mvp[16];
+                    mat_mul(proj, leye, panel_mvp);
+                    const float lm_col[4] = { 0.40f, 0.90f, 1.00f, 1.f }; // soft cyan
+                    const float tip[4]    = { 1.00f, 0.85f, 0.10f, 1.f }; // yellow (thumb/index tip)
+                    const float lm_r = 0.0033f * DOT_Z;  // ~0.35 degrees apparent size (very thin)
+                    // Unarmed: the whole hand is drawn mildly transparent; arming
+                    // (open palm) makes it opaque. Fingertips go green only when the
+                    // pinch is actually actionable (armed && pinching).
+                    const float ov_alpha = gestures_armed ? 1.f : 0.45f;
+                    for (int i = 0; i < 21 && nd < 40; i++) {
+                        float nx = gev.landmarks[i][0];
+                        float ny = gev.landmarks[i][1];
+                        // Normalized image coords -> panel-local. Image y is down,
+                        // eye-space y is up, so negate y. x is mapped directly; if
+                        // the hand reads left-right mirrored on hardware, change
+                        // (nx - 0.5f) to (0.5f - nx) here.
+                        float lx =  (nx - 0.5f) * 2.f * PANEL_W;
+                        float ly = -(ny - 0.5f) * 2.f * PANEL_H;
+                        const float* base = (i == 4 || i == 8)
+                                              ? ((gestures_armed && gev.pinching) ? status_green : tip)
+                                              : lm_col;
+                        float col[4] = { base[0], base[1], base[2], ov_alpha };
+                        QuadDraw& ld = dl[nd++];
+                        memcpy(ld.mvp, panel_mvp, sizeof(panel_mvp));
+                        memcpy(ld.color, col, 4 * sizeof(float));
+                        ld.rect[0] = lx; ld.rect[1] = ly; ld.rect[2] = lm_r; ld.rect[3] = lm_r;
+                        ld.textured = false;
+                        ld.circle = true;
+                    }
+                }
+            };
+            if (stereo_active) {
+                build_eye(0, stereo_eye_offset(ipd_m, 0));
+                build_eye(1, stereo_eye_offset(ipd_m, 1));
+            } else {
+                build_eye(0, 0.f);
             }
         }
         static int draw_fail = 0;
-        if (vkr_draw(vk, draws, ndraw)) {
+        // Stereo passes both stack lists (draws[1] is non-null even when
+        // empty — a null right list would silently downgrade to mono).
+        bool drew = stereo_active
+            ? vkr_draw_stereo(vk, draws[0], ndraw[0], draws[1], ndraw[1])
+            : vkr_draw(vk, draws[0], ndraw[0]);
+        if (drew) {
             draw_fail = 0;
             frames++;
         } else if (++draw_fail >= 120) {
@@ -1015,10 +1057,16 @@ int main(int argc, char** argv) {
         if (tnow - last_fps_t >= 2.0) {
             last_fps = float(frames / (tnow - last_fps_t));
             last_cap_fps = int(cap_frames / (tnow - last_fps_t) + 0.5);
-            printf("fps %.0f  cap %d/s  pose %s  6dof %s  head [%+.3f %+.3f %+.3f]m  dist %.2fm  size %.0f\"\n",
+            // Multi-screen has no single distance/size — report the rack scale
+            // multipliers instead.
+            printf(multi
+                   ? "fps %.0f  cap %d/s  pose %s  6dof %s  head [%+.3f %+.3f %+.3f]m  rack-dist x%.2f  rack-size x%.2f\n"
+                   : "fps %.0f  cap %d/s  pose %s  6dof %s  head [%+.3f %+.3f %+.3f]m  dist %.2fm  size %.0f\"\n",
                    last_fps, last_cap_fps, have_pose ? "ok" : "waiting",
                    sixdof_live ? "LIVE" : "frozen",
-                   head_p.x, head_p.y, head_p.z, distance, diag_in);
+                   head_p.x, head_p.y, head_p.z,
+                   multi ? rack_dist_scale : distance,
+                   multi ? rack_size_scale : diag_in);
             frames = 0;
             cap_frames = 0;
             last_fps_t = tnow;
@@ -1045,8 +1093,13 @@ int main(int argc, char** argv) {
             }
         }
         tele.send_hello(market, g_pid, fw, XR_DEVICE_TYPE_VITURE_CARINA);
-        tele.send_app(last_fps, sixdof_live, anchored, distance, diag_in,
-                      cap ? cap->name() : "none", sout.direct, rss_mb);
+        // Multi mode overloads distance/size with the rack scale multipliers
+        // (see Telemetry::send_app); single-screen sends meters/inches.
+        tele.send_app(last_fps, sixdof_live, anchored,
+                      multi ? rack_dist_scale : distance,
+                      multi ? rack_size_scale : diag_in,
+                      cap ? cap->name() : "none", sout.direct, rss_mb,
+                      stereo_active, int(scene.size()));
     }
 
     if (multi) {

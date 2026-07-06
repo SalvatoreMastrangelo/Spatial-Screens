@@ -71,6 +71,8 @@ void vkr_wait_uploads(VkRend& r);
 bool vkr_draw(VkRend& r, const QuadDraw* draws, int n);
 // SBS stereo: draw `left` into the left half viewport, `right` into the
 // right half (extent.width/2 each). Same contract as vkr_draw otherwise.
+// Caller MUST pass a non-null `right` even when nright == 0; a null right
+// list silently downgrades to the single-viewport mono path.
 bool vkr_draw_stereo(VkRend& r, const QuadDraw* left, int nleft,
                      const QuadDraw* right, int nright);
 void vkr_destroy(VkRend& r);
