@@ -103,6 +103,8 @@ static constexpr double FIST_HOLD_SECONDS = 0.5;          // how long a fist mus
 static constexpr float GRAB_REPOSITION_GAIN = 1.5f; // image-fraction -> world-fraction; tune on hardware
 static constexpr float GRAB_DIAG_MIN = 20.f;        // inches
 static constexpr float GRAB_DIAG_MAX = 200.f;       // inches
+static constexpr float SELECT_CONE_DEG = 40.f;  // gaze cone half-angle for pick
+static constexpr float SELECT_BORDER_M = 0.01f; // green border thickness (m)
 
 static void on_imu_noop(float*, double) {}
 static void on_pose_noop(float*, double) {}
@@ -646,6 +648,8 @@ int main(int argc, char** argv) {
     float pinch_prev_y[2] = {0.f, 0.f};
     double fist_start_s[2] = {-1.0, -1.0};
     bool fist_triggered[2] = {false, false};
+    int active_screen = -1;              // -1 = none (rack-global); else scene idx
+    bool was_two_up[2] = {false, false}; // rising-edge latch per hand for select
     // Two-hand grab (resize + reposition).
     GrabState grab;
     float grab_scale0 = 1.f;   // rack_size_scale snapshot at grab start (rack mode)
@@ -745,9 +749,11 @@ int main(int argc, char** argv) {
         GestureEvent gev = g_gestures.poll();
         HandState* hands[2] = { &gev.left, &gev.right };
         for (int i = 0; i < 2; i++) {
-            if (!hands[i]->present) armed[i] = false;      // hand gone -> re-arm
+            if (!hands[i]->present) { armed[i] = false; was_two_up[i] = false; }
             if (hands[i]->pose == "open_palm") armed[i] = true;
         }
+        // Defensive: a screen count can shrink (future feature) — never index OOB.
+        if (active_screen >= int(scene.size())) active_screen = -1;
 
         bool grab_now = gev.left.present && gev.right.present &&
                         armed[0] && armed[1] &&
@@ -796,6 +802,41 @@ int main(int argc, char** argv) {
             // (fist-hold recenter takes priority over pinch-drag distance).
             for (int i = 0; i < 2; i++) {
                 HandState& h = *hands[i];
+                if (armed[i] && h.pose == "two_up") {
+                    if (!was_two_up[i]) {           // rising edge only
+                        // Recentered head frame — matches the screens' world frame.
+                        Quat head_rc = qmul(qconj(ori_offset), head_q);
+                        Vec3 hp = qrot(qconj(ori_offset), head_p);
+                        std::vector<Vec3> spos(scene.size());
+                        for (size_t k = 0; k < scene.size(); k++) {
+                            Quat sq; Vec3 sp;
+                            scene_screen_pose(scene[k], rack_q, rack_p,
+                                              rack_dist_scale, sq, sp);
+                            spos[k] = sp;
+                        }
+                        int pick = pick_gaze_screen(spos, hp, head_rc, SELECT_CONE_DEG);
+                        active_screen = pick;        // -1 doubles as deselect
+                        if (pick >= 0 && !scene[pick].cfg.has_pose_override) {
+                            // Seed the override from the formula pose so retarget
+                            // gestures have a well-defined pose and there's no jump.
+                            Quat wq; Vec3 wp;
+                            scene_screen_pose(scene[pick], rack_q, rack_p,
+                                              rack_dist_scale, wq, wp);
+                            world_to_rack_frame(rack_q, rack_p, wq, wp,
+                                                scene[pick].cfg.pose_ori,
+                                                scene[pick].cfg.pose_pos);
+                            scene[pick].cfg.has_pose_override = true;
+                        }
+                        printf("gesture select -> screen %d\n", active_screen);
+                        tele.log("info", pick >= 0 ? "screen selected" : "screen deselected");
+                        armed[i] = false;            // one action per open-hand arm
+                    }
+                    was_two_up[i] = true;
+                    was_pinching[i] = false;
+                    fist_start_s[i] = -1;
+                    break;                            // this hand owns the frame
+                }
+                was_two_up[i] = false;
                 if (armed[i] && h.pose == "fist") {
                     if (fist_start_s[i] < 0) { fist_start_s[i] = now_s(); fist_triggered[i] = false; }
                     else if (!fist_triggered[i] && now_s() - fist_start_s[i] > FIST_HOLD_SECONDS) {
