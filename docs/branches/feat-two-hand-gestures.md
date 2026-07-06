@@ -47,9 +47,16 @@ sidecar) and the hand-overlay work.
     - [ ] **Confirm `MIRROR_HANDEDNESS`** (`gestures/classify.py`): does the left
           hand light up the LEFT status dot / left overlay panel? If swapped,
           flip the constant.
-    - [ ] **Measure two-pass inference latency** at 15 Hz. If it overruns the
-          budget, switch the sidecar to one plane + `num_hands=2` (both hands
-          from the left frame) — one-line change in `hand_tracker.py`.
+    - [x] **Inference throughput** — RESOLVED autonomously 2026-07-06. Findings:
+          downscaling the camera stream does NOT help (MediaPipe resizes to fixed
+          internal sizes; inference flat 24–27 ms from 640×480→160×120). Fix was
+          (a) run the two landmarker inferences concurrently (1.74×, ~52→30 ms;
+          commit `15c7917`) and (b) raise `GESTURE_INFER_HZ` 15→30 to un-alias
+          the 25 Hz camera's 40 ms grid (commit `65673a5`). Live rate went
+          **12.5 → stable 25 Hz**, no backpressure. Hand-free measured; confirm
+          it holds with two hands actively tracked (threaded cycle ~40 ms is near
+          the 40 ms budget — may dip gracefully, drain-loop absorbs). Single-frame
+          `num_hands=2` fallback remains available but is no longer needed.
     - [ ] **Tune grab feel**: `GRAB_REPOSITION_GAIN`, `GRAB_DIAG_MIN/MAX` in
           `main.cpp`.
     - [ ] **Check resize parallax**: if the two-hand resize drifts, source both
