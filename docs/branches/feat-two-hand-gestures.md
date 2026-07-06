@@ -133,18 +133,14 @@ sidecar) and the hand-overlay work.
       the rack (resize/reposition), single-hand gestures, and handedness all
       good. Clean SIGINT shutdown; workspace scaling + SBS panel mode restored,
       0 leftover VS monitors, DP-1 back to non-desktop=0.
-- [ ] **Fast-forward `main` — HELD (user decision 2026-07-06).** Branch is
-      verified and ready at **`6b5bbb9`** (integration merge `3b566ea` + the
-      final-review doc fixes + a docs-only merge-up of main's `5943801`
-      roadmap commit). FF is valid (`main` is an ancestor). Held because the
-      primary worktree — where `main` is checked out — has **active uncommitted
-      work** (a `roadmap.md` edit + 3 new untracked design docs:
-      floating-window-screens, screen-selection, vertical-placement). Land it
-      once that work is committed/stashed, with:
-      `git -C /home/salvatore/Desktop/code/viture merge --ff-only feat/two-hand-gestures`
-      The FF delta does not touch `roadmap.md` or the 3 new docs, so it won't
-      clobber them — the hold is only to avoid moving `main` under a live
-      session. (master deleted 2026-07-06; main is the sole mainline.)
+- [x] **Fast-forward `main` — LANDED (2026-07-06).** After the primary's
+      in-flight design-doc work was committed (main `ee9b088`), merged it up
+      into the branch (docs-only, clean) and fast-forwarded `main` to the
+      integrated tip. `main` now contains the full two-hand feature integrated
+      with stereo-3d. **Feature complete.** (master deleted 2026-07-06; main is
+      the sole mainline.) Follow-ups live in the "Review backlog" below +
+      the design doc's "Future ideas" (head-motion compensation, split
+      hysteresis, 1-plane send + rate-cap re-measure, rack-mode grab-feel tuning).
 
 ### Review backlog (non-blocking — deferred to follow-up, not fixed pre-merge)
 
