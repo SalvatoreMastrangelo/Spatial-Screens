@@ -68,9 +68,13 @@ this was surfaced) and the stereo-3d renderer.
 - [x] Design doc written + approved (2026-07-06).
 - [x] Roadmap backlog item #4 added; worktree + branch created from `main`.
 - [x] Branch resume doc (this file).
-- [ ] Implementation plan — next (writing-plans skill).
-- [ ] Implementation (TDD): `stereo.py` → `hand_tracker.py` threading + drain +
-      match → wire schema → C++ parse → HUD/telemetry → dashboard.
+- [x] Implementation plan — `docs/specs/2026-07-06-camera-fusion-depth-plan.md`
+      (8 tasks, TDD). NOTE: `stereo.py` renamed `depth_fusion.py` in the plan to
+      avoid clashing with the C++ `src/stereo.h` (SBS rendering); `landmarks_z`
+      wire field deferred (per-hand `depth` only in v1).
+- [ ] Implementation (TDD): `depth_fusion.py` → `hand_tracker.py` threading +
+      drain + match → wire schema → C++ parse → `--fusion` plumbing →
+      HUD/telemetry → dashboard.
 - [ ] Hardware verification pass (both-hands fps + depth monotonicity).
 
 ## Files (planned — see design §Files touched)
