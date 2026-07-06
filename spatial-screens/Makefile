@@ -88,6 +88,7 @@ CAPTURE_OBJS := src/capture.o src/capture_xshm.o src/capture_portal.o
 
 # Capture objects don't touch Vulkan or the shaders — lighter prereqs.
 src/capture.o src/capture_xshm.o src/capture_test.o: src/capture.h src/vk_surface.h
+src/capture_xshm.o src/main.o: src/cursor_overlay.h
 
 src/capture_portal.o: src/capture_portal.cpp src/capture_portal.h src/capture.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@

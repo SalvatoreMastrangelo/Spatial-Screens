@@ -23,6 +23,10 @@ public:
     // stays valid until the next latest_frame() or stop() on this backend.
     virtual bool latest_frame(CaptureFrame& out) = 0;
     // false = permanent failure; the caller switches to the next backend.
+    // True when the backend already blends the pointer into its frames
+    // (off the render thread) — the render loop must then skip its own
+    // XFixes overlay, whose round trip stalls behind server-side grabs.
+    virtual bool composites_cursor() const { return false; }
     virtual bool alive() const = 0;
     virtual const char* name() const = 0;
     virtual void stop() = 0;
@@ -31,5 +35,5 @@ public:
     virtual void on_outputs_changed(const std::vector<OutputRect>&) {}
 };
 
-std::unique_ptr<CaptureBackend> capture_create_xshm(Display* dpy, const OutputRect& source);
+std::unique_ptr<CaptureBackend> capture_create_xshm(const OutputRect& source, int hz);
 std::unique_ptr<CaptureBackend> capture_create_test();

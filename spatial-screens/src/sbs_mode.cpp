@@ -20,12 +20,14 @@ static bool output_is_wide(Display* dpy, const std::string& name) {
 // transient USB execution error (rc -4, seen on hardware at exit) would
 // otherwise strand the panel in SBS.
 static int set_mode_retry(XRDeviceProviderHandle provider, int mode, const char* what) {
+    // 6 x 500 ms: the post-lease-release retrain was measured needing 3
+    // retries (~1.5 s) on hardware — keep margin beyond that.
     int rc = -1;
-    for (int attempt = 0; attempt < 4; attempt++) {
+    for (int attempt = 0; attempt < 6; attempt++) {
         if (attempt) usleep(500 * 1000);
         rc = xr_device_provider_set_display_mode(provider, mode);
         printf("sbs: %s mode 0x%02x -> rc %d%s\n", what, mode, rc,
-               rc == 0 || attempt == 3 ? "" : " (retrying)");
+               rc == 0 || attempt == 5 ? "" : " (retrying)");
         if (rc == 0) break;
     }
     return rc;
