@@ -38,9 +38,42 @@ sidecar) and the hand-overlay work.
 ## Current state / next step
 
 - [x] Design doc written + approved (2026-07-06)
-- [ ] Implementation plan (writing-plans) — next
-- [ ] Implementation
-- [ ] Hardware verification pass (handedness value, inference latency, grab feel)
+- [x] Implementation plan — `docs/specs/2026-07-06-two-hand-gestures-plan.md`
+- [x] Implementation — **all 10 tasks + follow-ups done, every unit test green,
+      clean build.** Executed subagent-driven (per-task independent review;
+      opus review on the state machine). SDD ledger: `.superpowers/sdd/progress.md`.
+- [ ] **Hardware verification pass** (needs the glasses — single SDK client, no
+      viture-bridge / other spatial-screens session running; launch `./run.sh`):
+    - [ ] **Confirm `MIRROR_HANDEDNESS`** (`gestures/classify.py`): does the left
+          hand light up the LEFT status dot / left overlay panel? If swapped,
+          flip the constant.
+    - [ ] **Measure two-pass inference latency** at 15 Hz. If it overruns the
+          budget, switch the sidecar to one plane + `num_hands=2` (both hands
+          from the left frame) — one-line change in `hand_tracker.py`.
+    - [ ] **Tune grab feel**: `GRAB_REPOSITION_GAIN`, `GRAB_DIAG_MIN/MAX` in
+          `main.cpp`.
+    - [ ] **Check resize parallax**: if the two-hand resize drifts, source both
+          grab pinch points from the left frame during a grab.
+    - [ ] Sanity-check the HUD: three bottom dots (left-hand / VO-center /
+          right-hand), left/right overlay panels, per-hand grey/amber/blue/green.
+- [ ] Final whole-branch review (recommended before merge — can run
+      `/code-review` or ultra; per-task reviews already passed)
 - [ ] Merge to master
+
+## Implementation map (commits on this branch)
+
+| Task | Commit(s) | What |
+|------|-----------|------|
+| 1 | `03bb192` | multi-plane frame protocol (Python) |
+| 2 | `0846d45` | two-hand event schema (left/right sub-objects) |
+| 3 | `8775444` | handedness selection + `MIRROR_HANDEDNESS` |
+| 4 | `a5f0658` `b9c07d7` | `HandState`/`GestureEvent` C++ parser (+legacy-view test cover) |
+| 5 | `1234efa` `b4cb262` | pure grab math + hardened tests |
+| 6 | `cd68f4d` | dual-landmarker sidecar (route by handedness) |
+| 7 | `edc61bb` | forward both camera planes (C++ sender) |
+| 8 | `aee3ad7` | per-hand arming + two-hand grab state machine |
+| 9 | `dda8998` | two-hand overlay + per-hand status dots + centered VO dot; drop legacy view |
+| 9b | `cd5fc93` | split overlay into left/right panels |
+| docs | `421d9ce` `28e2260` | plan/design fixes + downscaled-inference future idea + status-dot plan |
 
 Base: branched off `master`.
