@@ -275,7 +275,13 @@ phase 2 is exactly what that driver needs.
    If not, phase 1's visualizer needs the same native bridge planned for phase 2.
 6. **120 Hz + 1200p on Linux.** Verify the glasses' EDID modes are all usable
    (community repos exist to fix mode issues on the Beast — [viture-beast-linux](https://github.com/topics/viture)).
-   Also verify SBS 3840x1080 mode switching from the SDK works on Linux.
+   ~~Also verify SBS 3840x1080 mode switching from the SDK works on Linux.~~
+   **VERIFIED 2026-07-05** (glasses-on spike): both `switch_dimension(true)`
+   (3840×1080@60) and `set_display_mode(0x45)` (**3840×1200@90, native per-eye
+   res**) → rc 0, X auto-adopts the 3840-wide mode, each eye gets one half;
+   clean restore both times. Design should use 0x45. See
+   `docs/testing/2026-07-05-sbs-3d-spike-handoff.md`. Note: `get_display_mode`
+   reads lag ~a cycle (trust rc + xrandr); the switch reflows the desktop layout.
 7. **Capture latency and protected content.** PipeWire screencast adds ~1-2 frames;
    fine for productivity, marginal for gaming. DRM-protected surfaces won't capture.
 8. **Wayland fragmentation.** Portal-based capture is portable, but virtual/headless

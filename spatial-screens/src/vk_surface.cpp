@@ -40,6 +40,22 @@ std::vector<OutputRect> list_outputs(Display* dpy) {
     return out;
 }
 
+std::vector<OutputRect> list_monitors(Display* dpy) {
+    std::vector<OutputRect> out;
+    Window root = DefaultRootWindow(dpy);
+    int n = 0;
+    XRRMonitorInfo* mi = XRRGetMonitors(dpy, root, True, &n);
+    if (!mi) return out;
+    for (int i = 0; i < n; i++) {
+        char* name = XGetAtomName(dpy, mi[i].name);
+        out.push_back({ name ? name : "", 0, mi[i].x, mi[i].y,
+                        mi[i].width, mi[i].height });
+        if (name) XFree(name);
+    }
+    XRRFreeMonitors(mi);
+    return out;
+}
+
 // ------------------------------------------------------------- direct ----
 
 // Saved RandR state for restore; single-output app, so a file-static is fine.
@@ -77,8 +93,20 @@ void direct_restore(Display* dpy) {
         Status st = RRSetConfigFailed;
         for (int i = 0; i < 30 && st != RRSetConfigSuccess; i++) {
             XRRScreenResources* res = XRRGetScreenResourcesCurrent(dpy, root);
+            // The saved mode can vanish mid-teardown (restoring the panel to
+            // 2D swaps the EDID and drops the 3840-wide mode) — re-validate
+            // it every attempt and fall back to the output's preferred mode.
+            RRMode want = g_saved.mode;
+            XRROutputInfo* oi = XRRGetOutputInfo(dpy, res, g_saved.output);
+            if (oi && oi->nmode) {
+                bool listed = false;
+                for (int m = 0; m < oi->nmode; m++)
+                    if (oi->modes[m] == want) { listed = true; break; }
+                if (!listed) want = oi->modes[0];
+            }
+            if (oi) XRRFreeOutputInfo(oi);
             st = XRRSetCrtcConfig(dpy, res, g_saved.crtc, CurrentTime,
-                                  g_saved.x, g_saved.y, g_saved.mode, g_saved.rot,
+                                  g_saved.x, g_saved.y, want, g_saved.rot,
                                   g_saved.crtc_outputs.data(),
                                   (int)g_saved.crtc_outputs.size());
             XRRFreeScreenResources(res);
@@ -195,7 +223,8 @@ bool direct_acquire(Display* dpy, VkInstance inst, RROutput out_id, SurfaceOut& 
     g_saved.phys = phys;
     g_saved.display = display;
 
-    // Mode: native resolution at the highest refresh (spec: 1920x1200@120).
+    // Mode: prefer the exact SBS 3840x1200 panel (stereo); else largest area
+    // at the highest refresh (mono, e.g. 1920x1200@120).
     uint32_t nmode = 0;
     vkGetDisplayModePropertiesKHR(phys, display, &nmode, nullptr);
     std::vector<VkDisplayModePropertiesKHR> modes(nmode);
@@ -210,6 +239,14 @@ bool direct_acquire(Display* dpy, VkInstance inst, RROutput out_id, SurfaceOut& 
     for (auto& m : modes) {
         uint32_t a = m.parameters.visibleRegion.width * m.parameters.visibleRegion.height;
         uint32_t b = best.parameters.visibleRegion.width * best.parameters.visibleRegion.height;
+        // Exact SBS mode wins outright (belt and braces for stereo: the
+        // largest-area rule would also pick it, but never rely on that).
+        bool m_sbs = m.parameters.visibleRegion.width == 3840 &&
+                     m.parameters.visibleRegion.height == 1200;
+        bool b_sbs = best.parameters.visibleRegion.width == 3840 &&
+                     best.parameters.visibleRegion.height == 1200;
+        if (m_sbs && !b_sbs) { best = m; continue; }
+        if (b_sbs && !m_sbs) continue;
         if (a > b || (a == b && m.parameters.refreshRate > best.parameters.refreshRate))
             best = m;
     }

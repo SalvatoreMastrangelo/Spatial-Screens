@@ -16,8 +16,9 @@ LDFLAGS := -L$(SDK_LIB) -lglasses $(VK_LIBS) -lpthread $(CAP_LIBS) \
 
 SHADER_HDRS := shaders/quad.vert.spv.h shaders/quad.frag.spv.h
 OBJS := src/main.o src/vk_renderer.o src/vk_surface.o src/gesture_client.o \
-        src/gesture_parse.o src/gesture_manip.o \
-        src/capture.o src/capture_xshm.o src/config.o src/capture_portal.o src/telemetry.o
+        src/gesture_parse.o src/gesture_manip.o src/scene.o \
+        src/capture.o src/capture_xshm.o src/config.o src/capture_portal.o src/telemetry.o \
+        src/sbs_mode.o
 
 spatial-screens: $(OBJS)
 	$(CXX) $(OBJS) -o $@ $(LDFLAGS)
@@ -46,9 +47,20 @@ src/gesture_manip_test.o: src/gesture_manip_test.cpp src/gesture_manip.h
 gesture-manip-test: src/gesture_manip_test.o src/gesture_manip.o
 	$(CXX) $^ -o $@
 
-test: gesture-parse-test gesture-manip-test
+src/scene.o: src/scene.cpp src/scene.h src/config.h src/pose_math.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+src/stereo_math_test.o: src/stereo_math_test.cpp src/config.h src/scene.h src/pose_math.h src/stereo.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Pure-logic stereo/scene/config test — no SDK/Vulkan/X deps.
+stereo-math-test: src/stereo_math_test.o src/config.o src/scene.o
+	$(CXX) $^ -o $@
+
+test: gesture-parse-test gesture-manip-test stereo-math-test
 	./gesture-parse-test
 	./gesture-manip-test
+	./stereo-math-test
 
 src/config.o: src/config.cpp src/config.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
@@ -56,9 +68,12 @@ src/config.o: src/config.cpp src/config.h
 src/telemetry.o: src/telemetry.cpp src/telemetry.h ../bridge/ws_server.hpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+src/sbs_mode.o: src/sbs_mode.cpp src/sbs_mode.h src/vk_surface.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
 src/main.o: src/gesture_client.h src/capture.h src/config.h src/telemetry.h src/capture_portal.h
 
-src/%.o: src/%.cpp $(SHADER_HDRS) src/vk_renderer.h src/vk_surface.h
+src/%.o: src/%.cpp $(SHADER_HDRS) src/vk_renderer.h src/vk_surface.h src/pose_math.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # Generated SPIR-V headers are checked in so builds work without glslang.
@@ -70,10 +85,21 @@ shaders/%.frag.spv.h: shaders/%.frag
 vk-test: src/vk_test.o src/vk_renderer.o src/vk_surface.o
 	$(CXX) $^ -o $@ $(VK_LIBS)
 
+# Throwaway hardware spike: does SBS/3D mode switching work on Linux?
+# SDK-only (no Vulkan/capture). Run via ./run-spike.sh. See
+# docs/testing/2026-07-05-sbs-3d-spike-handoff.md.
+src/sbs_spike.o: src/sbs_spike.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+sbs-spike: src/sbs_spike.o
+	$(CXX) $^ -o $@ -L$(SDK_LIB) -lglasses -lpthread \
+		-Wl,--disable-new-dtags,-rpath,'$$ORIGIN/$(SDK_LIB)' \
+		-Wl,--allow-shlib-undefined
+
 CAPTURE_OBJS := src/capture.o src/capture_xshm.o src/capture_portal.o
 
 # Capture objects don't touch Vulkan or the shaders — lighter prereqs.
 src/capture.o src/capture_xshm.o src/capture_test.o: src/capture.h src/vk_surface.h
+src/capture_xshm.o src/main.o: src/cursor_overlay.h
 
 src/capture_portal.o: src/capture_portal.cpp src/capture_portal.h src/capture.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
@@ -85,6 +111,6 @@ capture-test: src/capture_test.o $(CAPTURE_OBJS) src/vk_surface.o
 run: spatial-screens
 	./run.sh
 clean:
-	rm -f spatial-screens vk-test capture-test gesture-parse-test gesture-manip-test src/*.o
+	rm -f spatial-screens vk-test capture-test gesture-parse-test gesture-manip-test stereo-math-test sbs-spike src/*.o
 
 .PHONY: run clean test

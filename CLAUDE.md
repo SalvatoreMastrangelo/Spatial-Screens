@@ -9,7 +9,7 @@ Toolkit for the VITURE Luma Ultra XR glasses, Linux x86_64 only. Two independent
 - `sensor-viz/` — web dashboard (vanilla JS ESM + Vite + Three.js; no framework, no TypeScript)
 - `spatial-screens/gestures/` — Python 3 sidecar (MediaPipe Hands) that classifies pinch/pose gestures from the glasses' tracking camera; spawned by `spatial-screens` over a local Unix socket, see `docs/specs/2026-07-03-hand-gesture-control-design.md`
 - `bridge/` — C++17 daemon that streams SDK data (6DoF pose, raw IMU, temp, device events) as JSON over WebSocket at `ws://localhost:8765`; protocol documented in the header comment of `bridge/main.cpp`
-- `sdk/` — vendored closed-source VITURE SDK v2.0.0 (C headers + prebuilt x86_64 `.so`s). © VITURE Inc. — never modify these files, and flag any plan to publish this repo (redistribution is a licensing concern)
+- `sdk/` — closed-source VITURE SDK v2.0.0 (C headers + prebuilt x86_64 `.so`s), © VITURE Inc. **Not committed**: `sdk/{include,lib}` are git-ignored and fetched by `sdk/fetch-sdk.sh` (sha256-verified). Never commit these binaries — the repo is public (GPL-3.0 for our own code) and redistributing them is a licensing concern
 - `reference/` — gitignored third-party prior-art clones. Read-only reference, not this project's code
 - `spatial-screens/` — phase-2 native app (C++17 + Vulkan): one world-anchored virtual screen on the glasses, direct-display by default, portal/XShm capture chain, gesture sidecar (`gestures/`, Python/MediaPipe), config in `~/.config/spatial-screens.conf`, WS telemetry on 8765. Build deps beyond the SDK: `libvulkan-dev`, `libpipewire-0.3-dev`, dbus-1 dev headers. Like the bridge: launch via `./run.sh`, never with viture-bridge running (single-client SDK)
 
@@ -31,6 +31,11 @@ Gesture sidecar, in `spatial-screens/gestures/`: `pip install -r requirements.tx
 - The udev rule is mandatory: without it, `xr_device_provider_start()` segfaults inside the closed SDK. Install it, then unplug/replug the glasses.
 - WebHID path (3DoF) is Chrome/Edge only. In the device chooser, pick the "VITURE Microphone" companion device (VID `0x35ca`, PID `0x1102`) — the vendor HID interfaces enumerate there, not on the main `0x1104` device.
 - 6DoF poses use OpenGL/EUS coordinates: x→right, y→up, z→backward.
+
+## Branching & worktrees
+
+- New features are built in isolated git worktrees (under `.claude/worktrees/`), so multiple agents can work in parallel without colliding. Never develop a feature directly on `main`.
+- `main` is the single mainline: merge a feature into `main` only once it's finalized and working in its worktree. (This replaced the former two-branch setup where `master` was the integration branch and `main` was a separate gated ship branch; `master` no longer exists.)
 
 ## Conventions
 

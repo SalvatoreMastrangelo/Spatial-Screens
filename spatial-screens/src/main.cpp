@@ -50,77 +50,18 @@
 #include "viture_glasses_provider.h"
 #include "viture_device_carina.h"
 #include "vk_renderer.h"
+#include "pose_math.h"
 #include "vk_surface.h"
 #include "gesture_client.h"
 #include "gesture_manip.h"
 #include "capture.h"
+#include "cursor_overlay.h"
 #include "capture_portal.h"
 #include "config.h"
 #include "telemetry.h"
-
-// ---------------------------------------------------------------- math ----
-
-struct Quat { float w = 1, x = 0, y = 0, z = 0; };
-struct Vec3 { float x = 0, y = 0, z = 0; };
-
-static Quat qmul(const Quat& a, const Quat& b) {
-    return { a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
-             a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-             a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
-             a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w };
-}
-static Quat qconj(const Quat& q) { return { q.w, -q.x, -q.y, -q.z }; }
-
-static Quat yaw_twist(const Quat& q) {
-    float m = std::sqrt(q.w * q.w + q.y * q.y);
-    if (m < 1e-6f) return {};
-    return { q.w / m, 0, q.y / m, 0 };
-}
-
-static Quat quat_axis_angle(float ax, float ay, float az, float deg) {
-    float r = deg * float(M_PI) / 180.f * 0.5f;
-    float s = std::sin(r);
-    return { std::cos(r), ax * s, ay * s, az * s };
-}
-
-static Vec3 qrot(const Quat& q, const Vec3& v) {
-    float tx = 2 * (q.y * v.z - q.z * v.y);
-    float ty = 2 * (q.z * v.x - q.x * v.z);
-    float tz = 2 * (q.x * v.y - q.y * v.x);
-    return { v.x + q.w * tx + (q.y * tz - q.z * ty),
-             v.y + q.w * ty + (q.z * tx - q.x * tz),
-             v.z + q.w * tz + (q.x * ty - q.y * tx) };
-}
-
-// Column-major 4x4 from rotation quat + translation (OpenGL convention).
-static void mat_from_pose(const Quat& q, const Vec3& t, float* m) {
-    float xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
-    float xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
-    float wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
-    m[0] = 1 - 2 * (yy + zz); m[4] = 2 * (xy - wz);     m[8] = 2 * (xz + wy);      m[12] = t.x;
-    m[1] = 2 * (xy + wz);     m[5] = 1 - 2 * (xx + zz); m[9] = 2 * (yz - wx);      m[13] = t.y;
-    m[2] = 2 * (xz - wy);     m[6] = 2 * (yz + wx);     m[10] = 1 - 2 * (xx + yy); m[14] = t.z;
-    m[3] = 0;                 m[7] = 0;                 m[11] = 0;                 m[15] = 1;
-}
-
-// out = a * b (column-major 4x4)
-static void mat_mul(const float* a, const float* b, float* out) {
-    for (int c = 0; c < 4; c++)
-        for (int r = 0; r < 4; r++)
-            out[c * 4 + r] = a[0 * 4 + r] * b[c * 4 + 0] + a[1 * 4 + r] * b[c * 4 + 1] +
-                             a[2 * 4 + r] * b[c * 4 + 2] + a[3 * 4 + r] * b[c * 4 + 3];
-}
-
-// Symmetric perspective for Vulkan clip space (y-down, z in [0,1]);
-// rr/tt are frustum half-extents at the near plane, as for glFrustum.
-static void mat_projection_vk(float rr, float tt, float n, float f, float* m) {
-    memset(m, 0, 16 * sizeof(float));
-    m[0] = n / rr;
-    m[5] = -n / tt;
-    m[10] = f / (n - f);
-    m[11] = -1.f;
-    m[14] = n * f / (n - f);
-}
+#include "sbs_mode.h"
+#include "scene.h"
+#include "stereo.h"
 
 // -------------------------------------------------------- cursor overlay ----
 // Neither capture path delivers the pointer (mutter on X11 ignores the
@@ -146,60 +87,11 @@ static bool cursor_source_origin(const std::vector<OutputRect>& outs,
     return false;
 }
 
-// Saved patch of staging pixels beneath the last cursor stamp, so the
-// pointer can move at the tick rate between (possibly slower) content
-// frames: restore the patch, re-blend at the new position, re-upload.
-struct CursorUnder {
-    std::vector<uint8_t> px;
-    int x = 0, y = 0, w = 0, h = 0;  // rect in frame coords
-    bool valid = false;
-};
-
-static void cursor_restore(CursorUnder& u, uint8_t* dst, uint32_t pitch) {
-    if (!u.valid) return;
-    for (int row = 0; row < u.h; row++)
-        memcpy(dst + size_t(u.y + row) * pitch + size_t(u.x) * 4,
-               u.px.data() + size_t(row) * u.w * 4, size_t(u.w) * 4);
-    u.valid = false;
-}
-
-// Alpha-blend the XFixes cursor (premultiplied ARGB; rows of unsigned long,
-// low 32 bits per pixel) over BGRX pixels, saving the covered rect into `u`
-// first. sx/sy = captured region origin in root space.
-static void composite_cursor(Display* dpy, uint8_t* dst, int w, int h,
-                             uint32_t pitch, int sx, int sy, CursorUnder& u) {
-    XFixesCursorImage* ci = XFixesGetCursorImage(dpy);
-    if (!ci) return;
-    int cx = ci->x - ci->xhot - sx, cy = ci->y - ci->yhot - sy;
-    int x0 = std::max(cx, 0), y0 = std::max(cy, 0);
-    int x1 = std::min(cx + ci->width, w), y1 = std::min(cy + ci->height, h);
-    if (x0 >= x1 || y0 >= y1) { XFree(ci); return; }
-    u.x = x0; u.y = y0; u.w = x1 - x0; u.h = y1 - y0;
-    u.px.resize(size_t(u.w) * u.h * 4);
-    for (int row = 0; row < u.h; row++)
-        memcpy(u.px.data() + size_t(row) * u.w * 4,
-               dst + size_t(u.y + row) * pitch + size_t(u.x) * 4, size_t(u.w) * 4);
-    u.valid = true;
-    for (int dy = y0; dy < y1; dy++) {
-        uint32_t* out = reinterpret_cast<uint32_t*>(dst + size_t(dy) * pitch);
-        const unsigned long* src = ci->pixels + size_t(dy - cy) * ci->width - cx;
-        for (int dx = x0; dx < x1; dx++) {
-            uint32_t s = uint32_t(src[dx]);
-            uint32_t a = s >> 24;
-            if (!a) continue;
-            uint32_t d = out[dx];
-            uint32_t rb = ((d & 0x00ff00ffu) * (255 - a) / 255) & 0x00ff00ffu;
-            uint32_t g = ((d & 0x0000ff00u) * (255 - a) / 255) & 0x0000ff00u;
-            out[dx] = (s & 0x00ffffffu) + rb + g;  // premul src + dst*(1-a)
-        }
-    }
-    XFree(ci);
-}
-
 // ------------------------------------------------------------- SDK glue ----
 
 static XRDeviceProviderHandle g_provider = nullptr;
 static int g_pid = 0;
+static int g_sbs_orig = -1;
 static std::atomic<bool> g_running{true};
 static bool g_probe_camera = false;
 static int g_probe_frames_remaining = 0;
@@ -297,6 +189,18 @@ static bool sdk_init() {
     }
     printf("SDK started (pid 0x%04x, Carina 6DoF)\n", pid);
     return true;
+}
+
+// Every exit path after sdk_init() must restore the panel mode BEFORE the
+// provider goes away, then tear the SDK down. Safe to call once only.
+static void sdk_shutdown() {
+    if (!g_provider) return;
+    sbs_exit(g_provider, g_sbs_orig);
+    g_sbs_orig = -1;
+    xr_device_provider_stop(g_provider);
+    xr_device_provider_shutdown(g_provider);
+    xr_device_provider_destroy(g_provider);
+    g_provider = nullptr;
 }
 
 static std::string executable_dir() {
@@ -404,6 +308,8 @@ int main(int argc, char** argv) {
                o.distance, o.size, o.pitch_trim, o.predict_ms);
         printf("smooth-pos = %.2f\nsmooth-ori = %.2f\nwindow = %s\nws-port = %d\n",
                o.smooth_pos, o.smooth_ori, o.window ? "true" : "false", o.ws_port);
+        printf("stereo = %s\nipd-mm = %.1f\nworkspace = %s\nscreens = %zu configured\n",
+               o.stereo ? "true" : "false", o.ipd_mm, o.workspace.c_str(), o.screens.size());
         return 0;
     }
     Telemetry tele;
@@ -449,9 +355,27 @@ int main(int argc, char** argv) {
     }
     printf("glasses: %s (%dx%d)\n", glasses.name.c_str(), glasses.w, glasses.h);
 
+    // -- SDK first: the panel must be in its final mode before Vulkan
+    // enumerates display modes (direct mode picks from what's exposed).
+    if (!sdk_init()) return 1;
+
+    // -- SBS 3D: switch the panel and wait for RandR to see 3840-wide.
+    // Window mode skips the panel switch entirely (debug renders SBS halves
+    // into a desktop window). Failure falls back to mono — never fatal.
+    if (o.stereo && !force_window) {
+        g_sbs_orig = sbs_enter(g_provider, dpy, glasses.name);
+        if (g_sbs_orig >= 0) {
+            // The mode switch reflowed the desktop — re-resolve the glasses
+            // rect (position AND size changed to 3840x1200).
+            outputs = list_outputs(dpy);
+            for (auto& out2 : outputs)
+                if (out2.name == glasses.name) { glasses = out2; break; }
+        }
+    }
+
     // -- Vulkan: direct display (default) or EWMH-fullscreen window fallback
     VkRend vk{};
-    if (!vkr_create_instance(vk, !force_window)) return 1;
+    if (!vkr_create_instance(vk, !force_window)) { sdk_shutdown(); return 1; }
     SurfaceOut sout{};
     bool direct_ok = !force_window && vk.has_display_ext &&
                      direct_acquire(dpy, vk.instance, glasses.id, sout);
@@ -461,8 +385,10 @@ int main(int argc, char** argv) {
         // have shifted meanwhile — re-resolve the glasses rect first.
         outputs = list_outputs(dpy);
         for (auto& o : outputs) if (o.name == glasses.name) { glasses = o; break; }
-        if (!window_create(dpy, vk.instance, glasses.x, glasses.y, glasses.w, glasses.h, sout))
+        if (!window_create(dpy, vk.instance, glasses.x, glasses.y, glasses.w, glasses.h, sout)) {
+            sdk_shutdown();
             return 1;
+        }
     }
     vk.phys = sout.phys;
     vk.surface = sout.surface;
@@ -471,6 +397,7 @@ int main(int argc, char** argv) {
         if (sout.direct) direct_release(vk.instance);
         vkr_destroy(vk);
         if (sout.direct) direct_restore(dpy);
+        sdk_shutdown();
         return 1;
     }
     int rr_event_base = 0, rr_error_base = 0;
@@ -495,18 +422,86 @@ int main(int argc, char** argv) {
         }
     }
 
-    // -- capture backend chain: auto = portal -> xshm -> test; explicit backend -> test
+    // The lease just reflowed the desktop and RandR events weren't selected
+    // yet — re-snapshot so both the scene's monitor matching and cursor
+    // mapping start from live geometry.
+    //
+    // run.sh applies the stereo workspace only AFTER the lease settles the
+    // layout (mutter reapplies its stored config on both the SBS adopt and
+    // the lease, clobbering anything set earlier), so the VS monitors and
+    // the panel's scaled rect land a beat after this point — wait for the
+    // configured grid, re-resolving the capture rect every tick.
+    int want_tiles = 0;
+    if (!force_window && o.workspace.size() == 3 && o.workspace[1] == 'x' &&
+        o.workspace[0] >= '1' && o.workspace[0] <= '9' &&
+        o.workspace[2] >= '1' && o.workspace[2] <= '9')
+        want_tiles = (o.workspace[0] - '0') * (o.workspace[2] - '0');
+
+    // Capture source rect = what the xshm backend grabs (the whole capture
+    // output). UVs slice it; test/portal frames are sliced the same way.
+    OutputRect cap_src{};
+    std::vector<MonRect> vs_mons;
+    for (int waited = 0;; waited += 250) {
+        outputs = list_outputs(dpy);
+        cap_src = {};
+        for (auto& oo : outputs)
+            if (!capture_name.empty() ? oo.name == capture_name
+                                      : oo.name != glasses.name) { cap_src = oo; break; }
+        vs_mons.clear();
+        for (auto& m : list_monitors(dpy)) {
+            bool inside = m.x >= cap_src.x && m.y >= cap_src.y &&
+                          m.x + m.w <= cap_src.x + cap_src.w &&
+                          m.y + m.h <= cap_src.y + cap_src.h;
+            if (m.name.rfind("VS", 0) == 0 && inside)
+                vs_mons.push_back({m.name, m.x, m.y, m.w, m.h});
+        }
+        if (want_tiles <= 1 || (int)vs_mons.size() >= want_tiles) break;
+        if (waited >= 10000) {
+            fprintf(stderr, "scene: workspace %s never appeared (%zu/%d tiles) — "
+                            "continuing without it\n",
+                    o.workspace.c_str(), vs_mons.size(), want_tiles);
+            break;
+        }
+        if (!waited) printf("scene: waiting for workspace monitors (%s grid)…\n",
+                            o.workspace.c_str());
+        usleep(250 * 1000);
+    }
+    MonRect fb_rect{cap_src.name, cap_src.x, cap_src.y, cap_src.w, cap_src.h};
+    std::vector<ScreenInst> scene;
+    if (!o.screens.empty() || vs_mons.size() > 1) {
+        scene = scene_build(o.screens, vs_mons, fb_rect);
+        if (scene.empty())
+            fprintf(stderr, "scene: no configured screen matched a monitor — "
+                            "falling back to single screen\n");
+    }
+    bool multi = scene.size() > 1;
+    if (scene.empty()) {
+        // Single screen, full frame: reproduces pre-multi behavior exactly.
+        ScreenInst s;
+        s.cfg.distance = distance;
+        s.cfg.size = diag_in;
+        scene.push_back(s);
+    }
+    printf("scene: %zu screen(s)%s\n", scene.size(), multi ? " (rack)" : "");
+    float rack_dist_scale = multi && app_state.rack_distance_scale > 0
+                                ? app_state.rack_distance_scale : 1.f;
+    float rack_size_scale = multi && app_state.rack_size_scale > 0
+                                ? app_state.rack_size_scale : 1.f;
+
+    // -- capture backend chain: auto = portal -> xshm -> test; explicit
+    // backend -> test. Multi-screen forces xshm — portal delivers one picked
+    // stream and can't feed N uv rects.
     std::vector<std::string> chain;
-    if (capture_backend == "auto") chain = { "portal", "xshm", "test" };
+    if (capture_backend == "auto") {
+        if (multi) chain = { "xshm", "test" };  // portal can't feed N uv rects
+        else chain = { "portal", "xshm", "test" };
+    }
     else if (capture_backend != "test") chain = { capture_backend, "test" };
     else chain = { "test" };
     size_t chain_pos = 0;
     std::unique_ptr<CaptureBackend> cap;
     float cap_aspect = 16.f / 9.f;
     CursorUnder cursor_under;
-    // The lease just reflowed the desktop and RandR events weren't selected
-    // yet — re-snapshot so cursor mapping starts from live geometry.
-    outputs = list_outputs(dpy);
     auto switch_backend = [&]() {
         while (chain_pos < chain.size()) {
             const std::string& kind = chain[chain_pos++];
@@ -528,7 +523,7 @@ int main(int argc, char** argv) {
                 for (auto& o : outs)
                     if (!capture_name.empty() ? o.name == capture_name
                                               : o.name != glasses.name) { src = o; found = true; break; }
-                if (found) b = capture_create_xshm(dpy, src);
+                if (found) b = capture_create_xshm(src, capture_hz);
                 else fprintf(stderr, "capture: no xshm source monitor\n");
             } else if (kind == "test") {
                 b = capture_create_test();
@@ -561,20 +556,12 @@ int main(int argc, char** argv) {
         if (sout.direct) direct_release(vk.instance);
         vkr_destroy(vk);
         if (sout.direct) direct_restore(dpy);
+        sdk_shutdown();
         return 1;
     }
     if (first.data) {
         vkr_upload(vk, first.data, size_t(first.pitch) * first.h);
         cap_aspect = float(first.w) / float(first.h);
-    }
-
-    // -- SDK last (it takes a second; window is already up)
-    if (!sdk_init()) {
-        vkr_destroy_device(vk);
-        if (sout.direct) direct_release(vk.instance);
-        vkr_destroy(vk);
-        if (sout.direct) direct_restore(dpy);
-        return 1;
     }
 
     char market[64] = {0};
@@ -589,30 +576,47 @@ int main(int argc, char** argv) {
     tele.log("info", g_gestures.enabled() ? "gesture sidecar connected"
                                           : "gesture sidecar unavailable");
 
-    // -- projection from the glasses' 52-degree diagonal FOV (16:10 panel)
+    // -- projection from the glasses' 52-degree diagonal FOV (16:10 panel).
+    // Stereo: each eye is a full-FOV 1920x1200 panel — frustum from HALF the
+    // swapchain width. Derived values refresh whenever the extent changes
+    // (window resize, panel mode change under the lease).
     const float DIAG_FOV = 52.f;
-    // In direct mode the swapchain extent is authoritative (mode may differ
-    // from the desktop rect we detected).
-    if (sout.direct) { glasses.w = int(vk.extent.width); glasses.h = int(vk.extent.height); }
-    float diag_px = std::sqrt(float(glasses.w * glasses.w + glasses.h * glasses.h));
-    float half = std::tan(DIAG_FOV * float(M_PI) / 360.f);
     float near_z = 0.1f, far_z = 100.f;
-    float r = half * glasses.w / diag_px * near_z;
-    float t = half * glasses.h / diag_px * near_z;
+    float r = 0, t = 0;
+    bool stereo_active = false;
+    VkExtent2D known_extent{0, 0};
+    auto refresh_projection = [&]() {
+        if (sout.direct) { glasses.w = int(vk.extent.width); glasses.h = int(vk.extent.height); }
+        // Direct: stereo iff the scanned-out mode is SBS-wide. Window: SBS
+        // halves are only correct on an actually-SBS output — deliberate window
+        // stereo (--window debug) or a succeeded panel switch (g_sbs_orig >= 0).
+        // Otherwise the halves would squish into a 2D panel; spec §4 → mono.
+        stereo_active = o.stereo &&
+            (sout.direct ? vk.extent.width >= 2 * vk.extent.height
+                         : (force_window || g_sbs_orig >= 0));
+        uint32_t eye_w = stereo_active ? vk.extent.width / 2 : vk.extent.width;
+        stereo_eye_frustum(eye_w, vk.extent.height, DIAG_FOV, near_z, r, t);
+        known_extent = vk.extent;
+        printf("render: %s, eye %ux%u\n", stereo_active ? "stereo (SBS)" : "mono",
+               eye_w, vk.extent.height);
+    };
+    refresh_projection();
+    float ipd_m = o.ipd_mm * 0.001f;
 
     // -- screen anchor state
     Quat head_q; Vec3 head_p;
     Quat ori_offset;              // yaw recenter
     Quat trim = quat_axis_angle(1, 0, 0, pitch_trim);
-    Quat anchor_q; Vec3 anchor_p; // virtual screen pose
+    Quat rack_q; Vec3 rack_p;     // rack origin pose (all screens hang off it)
     bool anchored = false;
 
-    auto place_screen = [&]() {
+    auto place_rack = [&]() {
         Quat basis = yaw_twist(qmul(qconj(ori_offset), head_q));
-        anchor_q = basis;
-        Vec3 fwd = qrot(basis, { 0, 0, -1 });
-        Vec3 hp = qrot(qconj(ori_offset), head_p);
-        anchor_p = { hp.x + fwd.x * distance, hp.y + fwd.y * distance, hp.z + fwd.z * distance };
+        rack_q = basis;
+        // Rack origin AT the head; each screen walks out by its own distance
+        // in scene_screen_pose — for a single screen this reproduces the old
+        // place_screen geometry (head + fwd * distance) exactly.
+        rack_p = qrot(qconj(ori_offset), head_p);
         anchored = true;
     };
 
@@ -623,6 +627,7 @@ int main(int argc, char** argv) {
     double last_fps_t = now_s(), last_cap_t = 0;
     int frames = 0, cap_frames = 0, last_cap_fps = 0;
     float last_fps = 0;
+    double last_mode_poll_t = 0; int last_polled_mode = -1;
     int rss_mb = 0;
     bool rss_warned = false, rss_critical = false;
     bool have_pose = false;
@@ -643,6 +648,7 @@ int main(int argc, char** argv) {
     bool fist_triggered[2] = {false, false};
     // Two-hand grab (resize + reposition).
     GrabState grab;
+    float grab_scale0 = 1.f;   // rack_size_scale snapshot at grab start (rack mode)
 
     printf("running — hotkeys work globally with Ctrl+Alt: R recenter (Shift adds "
            "VIO reset), [ ] distance, - = size, Q quit\n"
@@ -673,15 +679,29 @@ int main(int argc, char** argv) {
                     recenter_at = now_s() + 0.5;
                 } else {
                     ori_offset = yaw_twist(head_q);
-                    place_screen();
+                    place_rack();
                 }
                 printf("recentered%s\n", shift ? " + VIO reset" : "");
                 tele.log("info", "recentered");
             }
-            else if (ks == XK_bracketleft)  { distance = std::max(0.5f, distance - 0.25f); place_screen(); }
-            else if (ks == XK_bracketright) { distance = std::min(10.f, distance + 0.25f); place_screen(); }
-            else if (ks == XK_minus) diag_in = std::max(10.f, diag_in - 10.f);
-            else if (ks == XK_equal) diag_in = std::min(400.f, diag_in + 10.f);
+            else if (ks == XK_bracketleft) {
+                if (multi) rack_dist_scale = std::max(0.25f, rack_dist_scale * 0.9f);
+                else { distance = std::max(0.5f, distance - 0.25f); scene[0].cfg.distance = distance; }
+                place_rack();
+            }
+            else if (ks == XK_bracketright) {
+                if (multi) rack_dist_scale = std::min(4.f, rack_dist_scale * 1.1f);
+                else { distance = std::min(10.f, distance + 0.25f); scene[0].cfg.distance = distance; }
+                place_rack();
+            }
+            else if (ks == XK_minus) {
+                if (multi) rack_size_scale = std::max(0.4f, rack_size_scale * 0.9f);
+                else { diag_in = std::max(10.f, diag_in - 10.f); scene[0].cfg.size = diag_in; }
+            }
+            else if (ks == XK_equal) {
+                if (multi) rack_size_scale = std::min(3.f, rack_size_scale * 1.1f);
+                else { diag_in = std::min(400.f, diag_in + 10.f); scene[0].cfg.size = diag_in; }
+            }
         }
         if (!g_running) break;
 
@@ -702,6 +722,21 @@ int main(int argc, char** argv) {
             recenter_at = -1;
         }
 
+        // ---- informational display-mode poll (1 Hz). NEVER gates rendering:
+        // get_display_mode lags a full command cycle (spike finding #1).
+        if (sout.direct && tnow - last_mode_poll_t > 1.0) {
+            last_mode_poll_t = tnow;
+            int m = xr_device_provider_get_display_mode(g_provider);
+            if (m >= 0 && m != last_polled_mode) {
+                if (last_polled_mode >= 0) {
+                    char msg[64];
+                    snprintf(msg, sizeof(msg), "panel mode now 0x%02x (informational)", m);
+                    tele.log("info", msg);
+                }
+                last_polled_mode = m;
+            }
+        }
+
         // ---- gestures (two hands)
         // Per-hand arming: each open palm arms its own hand. A single-hand
         // gesture needs that hand armed; the two-hand grab needs both. Each
@@ -720,19 +755,30 @@ int main(int argc, char** argv) {
 
         if (grab_now) {
             if (!grab.active) {
-                Vec3 r = qrot(anchor_q, { 1, 0, 0 });
-                Vec3 u = qrot(anchor_q, { 0, 1, 0 });
+                Vec3 rr = qrot(rack_q, { 1, 0, 0 });
+                Vec3 uu = qrot(rack_q, { 0, 1, 0 });
                 grab = grab_begin(gev.left.pinch_x, gev.left.pinch_y,
                                   gev.right.pinch_x, gev.right.pinch_y,
-                                  diag_in, { anchor_p.x, anchor_p.y, anchor_p.z },
-                                  { r.x, r.y, r.z }, { u.x, u.y, u.z });
+                                  diag_in, { rack_p.x, rack_p.y, rack_p.z },
+                                  { rr.x, rr.y, rr.z }, { uu.x, uu.y, uu.z });
+                grab_scale0 = rack_size_scale;   // baseline for rack-mode resize
             } else {
                 GrabResult gr = grab_update(grab, gev.left.pinch_x, gev.left.pinch_y,
                                             gev.right.pinch_x, gev.right.pinch_y,
                                             distance, GRAB_REPOSITION_GAIN,
                                             GRAB_DIAG_MIN, GRAB_DIAG_MAX);
-                diag_in = gr.diag;
-                anchor_p = { gr.anchor.x, gr.anchor.y, gr.anchor.z };
+                // Reposition: move the rack origin in its own right/up plane.
+                rack_p = { gr.anchor.x, gr.anchor.y, gr.anchor.z };
+                // Resize: single screen -> diagonal inches (mirror to scene[0]);
+                // multi-screen rack -> a uniform size scale. grab.size0 is the
+                // diag_in snapshot, so gr.diag/size0 is the spread ratio.
+                if (multi) {
+                    float ratio = gr.diag / std::max(1e-3f, grab.size0);
+                    rack_size_scale = std::clamp(grab_scale0 * ratio, 0.4f, 3.f);
+                } else {
+                    diag_in = gr.diag;
+                    scene[0].cfg.size = diag_in;
+                }
             }
             // Suppress single-hand logic and reset its per-hand run-state so it
             // re-seeds cleanly if a hand later acts alone.
@@ -754,7 +800,7 @@ int main(int argc, char** argv) {
                     if (fist_start_s[i] < 0) { fist_start_s[i] = now_s(); fist_triggered[i] = false; }
                     else if (!fist_triggered[i] && now_s() - fist_start_s[i] > FIST_HOLD_SECONDS) {
                         ori_offset = yaw_twist(head_q);
-                        place_screen();
+                        place_rack();
                         printf("gesture recenter (fist-hold)\n");
                         tele.log("info", "recentered");
                         fist_triggered[i] = true;
@@ -767,13 +813,14 @@ int main(int argc, char** argv) {
                     fist_triggered[i] = false;
                     if (was_pinching[i]) {
                         float dy = h.pinch_y - pinch_prev_y[i]; // image space: +y down
-                        float old_distance = distance;
-                        distance = std::clamp(distance - dy * PINCH_DISTANCE_SENSITIVITY, 0.5f, 10.f);
-                        Vec3 fwd = qrot(anchor_q, { 0, 0, -1 });
-                        float ddist = distance - old_distance;
-                        anchor_p.x += fwd.x * ddist;
-                        anchor_p.y += fwd.y * ddist;
-                        anchor_p.z += fwd.z * ddist;
+                        if (multi) {
+                            rack_dist_scale = std::clamp(
+                                rack_dist_scale * (1.f - dy * PINCH_DISTANCE_SENSITIVITY * 0.5f),
+                                0.25f, 4.f);
+                        } else {
+                            distance = std::clamp(distance - dy * PINCH_DISTANCE_SENSITIVITY, 0.5f, 10.f);
+                            scene[0].cfg.distance = distance;
+                        }
                     }
                     pinch_prev_y[i] = h.pinch_y;
                     was_pinching[i] = true;
@@ -797,7 +844,7 @@ int main(int argc, char** argv) {
                 head_q = rq;
                 have_pose = true;
                 ori_offset = yaw_twist(head_q);
-                place_screen();
+                place_rack();
             } else {
                 // One-Euro position filter: the cutoff follows a SMOOTHED
                 // speed estimate, so mm-level VIO noise spikes cannot open
@@ -895,7 +942,7 @@ int main(int argc, char** argv) {
             // still move smoothly: restore the pixels under the previous
             // stamp, re-blend at the current position, re-copy to the GPU.
             if (g_running && cap && have_xfixes && vk.staging_ptr &&
-                strcmp(cap->name(), "test") != 0) {
+                !cap->composites_cursor() && strcmp(cap->name(), "test") != 0) {
                 int sx = 0, sy = 0;
                 if (cursor_source_origin(outputs, capture_name, glasses.name,
                                          int(vk.tex_w), int(vk.tex_h), sx, sy)) {
@@ -903,155 +950,261 @@ int main(int argc, char** argv) {
                     vkr_wait_uploads(vk);
                     cursor_restore(cursor_under, st, vk.tex_pitch);
                     composite_cursor(dpy, st, int(vk.tex_w), int(vk.tex_h),
-                                     vk.tex_pitch, sx, sy, cursor_under);
+                                     vk.tex_pitch, sx, sy, &cursor_under);
                     vk.tex_dirty = true;
                 }
             }
         }
 
+        // Extent changed (swapchain rebuilt — e.g. a panel-mode toggle under
+        // the lease) — re-derive the per-eye projection and render path.
+        if (vk.extent.width != known_extent.width || vk.extent.height != known_extent.height)
+            refresh_projection();
+
         // ---- render
-        QuadDraw draws[56];
-        int ndraw = 0;
+        // Draw-list caps tie together, per eye: config's 16-screen max + VO
+        // dot + 2 per-hand status dots + 2 hands x 21 landmarks = 61 <= 64.
+        // Bump any of those caps and this must grow too.
+        QuadDraw draws[2][64];
+        int ndraw[2] = {0, 0};
         if (have_pose && anchored) {
             // view = trim ⊗ inverse(recentered head pose)
             Quat head_rc = qmul(qconj(ori_offset), head_q);
             Vec3 hp = qrot(qconj(ori_offset), head_p);
             Quat view_q = qconj(qmul(head_rc, trim));
             Vec3 hp_neg = qrot(view_q, { -hp.x, -hp.y, -hp.z });
-            float view[16], model[16], vm[16], proj[16], mvp[16];
-            mat_from_pose(view_q, hp_neg, view);
-            mat_from_pose(anchor_q, anchor_p, model);
-            mat_mul(view, model, vm);
-            mat_projection_vk(r, t, near_z, far_z, proj);
-            mat_mul(proj, vm, mvp);
 
-            // quad dimensions from diagonal size + capture aspect
-            float diag_m = diag_in * 0.0254f;
-            float w2 = diag_m * cap_aspect / std::sqrt(1 + cap_aspect * cap_aspect) * 0.5f;
-            float h2 = diag_m / std::sqrt(1 + cap_aspect * cap_aspect) * 0.5f;
-
-            auto quad = [&](float cx, float cy, float hw, float hh,
-                            const float* col, bool textured) {
-                QuadDraw& d = draws[ndraw++];
-                memcpy(d.mvp, mvp, sizeof(mvp));
-                memcpy(d.color, col, 4 * sizeof(float));
-                d.rect[0] = cx; d.rect[1] = cy; d.rect[2] = hw; d.rect[3] = hh;
-                d.textured = textured;
-            };
-            const float white[4] = { 1, 1, 1, 1 };
-            quad(0, 0, w2, h2, white, true);
-
-            // Head-locked tracking-status dot (replaced the old border
-            // frame): blue = 6DoF live, orange = positional tracking frozen
-            // (orientation-only). Fixed at bottom-center of the view —
-            // mvp is projection * translate only, no world transform.
-            const float live[4] = { 0.35f, 0.76f, 1.f, 1.f };
-            const float frozen[4] = { 1.f, 0.55f, 0.2f, 1.f };
-            const float DOT_Z = 0.5f;          // meters in front of the eye
-            float tan_r = r / near_z, tan_t = t / near_z;
-            float eye[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
-                              0.0f, -0.95f * tan_t * DOT_Z, -DOT_Z, 1 };
-            QuadDraw& d = draws[ndraw++];
-            mat_mul(proj, eye, d.mvp);
-            memcpy(d.color, sixdof_live ? live : frozen, 4 * sizeof(float));
-            float dot_r = 0.0045f * DOT_Z;     // ~0.5 degrees apparent size
-            d.rect[0] = 0; d.rect[1] = 0; d.rect[2] = dot_r; d.rect[3] = dot_r;
-            d.textured = false;
-            d.circle = true;
-
-            // Shared "pinch active" green — the pinch-status dot and the
-            // fingertip highlight must use the same green (design: the two
-            // feedback channels agree).
-            const float status_green[4] = { 0.20f, 0.90f, 0.30f, 1.f };
-
-            // Per-hand pinch/arm-status dots: one per hand at the bottom
-            // corners (left hand -> bottom-left, right hand -> bottom-right),
-            // flanking the centered VO dot. Shown only while the gesture
-            // pipeline is live. Per-hand states: grey = hand not seen, amber =
-            // seen but not armed, blue = armed (open palm), green = armed+pinch.
-            if (g_gestures.enabled()) {
-                const float grey[4]  = { 0.5f, 0.5f, 0.5f, 1.f };
-                const float amber[4] = { 1.f, 0.65f, 0.1f, 1.f };
-                const float blue[4]  = { 0.30f, 0.55f, 1.f, 1.f };
-                const HandState* hstate[2] = { &gev.left, &gev.right };
-                const float hxf[2] = { -0.95f, 0.95f };  // left dot left, right dot right
-                for (int i = 0; i < 2; i++) {
-                    const HandState& h = *hstate[i];
-                    const float* pcol = !h.present ? grey
-                                      : !armed[i]  ? amber
-                                      : (h.pinching ? status_green : blue);
-                    float peye[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
-                                       hxf[i] * tan_r * DOT_Z, -0.95f * tan_t * DOT_Z, -DOT_Z, 1 };
-                    QuadDraw& pd = draws[ndraw++];
-                    mat_mul(proj, peye, pd.mvp);
-                    memcpy(pd.color, pcol, 4 * sizeof(float));
-                    pd.rect[0] = 0; pd.rect[1] = 0; pd.rect[2] = dot_r; pd.rect[3] = dot_r;
-                    pd.textured = false;
-                    pd.circle = true;
-                }
+            // Painter's order, per frame: no depth buffer, and 6DoF lets the
+            // user walk around the rack — order by live head distance,
+            // farthest first, so the nearer screen wins where two overlap.
+            // Poses are eye-independent; both eyes reuse them.
+            struct SortedScreen { Quat q; Vec3 p; float d2; const ScreenInst* s; };
+            SortedScreen order[40];
+            int nscene = int(scene.size() < 40 ? scene.size() : 40);
+            for (int i = 0; i < nscene; i++) {
+                SortedScreen& e = order[i];
+                e.s = &scene[i];
+                scene_screen_pose(scene[i], rack_q, rack_p, rack_dist_scale, e.q, e.p);
+                float dx = e.p.x - hp.x, dy = e.p.y - hp.y, dz = e.p.z - hp.z;
+                e.d2 = dx * dx + dy * dy + dz * dz;
             }
+            std::sort(order, order + nscene,
+                      [](const SortedScreen& a, const SortedScreen& b) { return a.d2 > b.d2; });
 
-            // Hand-landmark overlay: each hand as 21 dots in its own
-            // head-locked panel (left hand -> lower-left, right hand ->
-            // lower-right), shown only while that hand is seen. Per-hand
-            // alpha follows that hand's armed flag; thumb/index tips go
-            // green when that hand is armed and pinching.
-            if (g_gestures.enabled()) {
-                int cw = g_cam_w.load(std::memory_order_relaxed);
-                int ch = g_cam_h.load(std::memory_order_relaxed);
-                float aspect = (cw > 0 && ch > 0) ? float(cw) / float(ch) : 4.f / 3.f;
-                const float PANEL_H = 0.09f * DOT_Z;        // half-height (~10° tall)
-                const float PANEL_W = PANEL_H * aspect;     // aspect-preserved half-width
-                const float lm_col[4] = { 0.40f, 0.90f, 1.00f, 1.f }; // soft cyan
-                const float tip[4]    = { 1.00f, 0.85f, 0.10f, 1.f }; // yellow (thumb/index tip)
-                const float lm_r = 0.0033f * DOT_Z;  // ~0.35 degrees apparent size
-                HandState* ovh[2] = { &gev.left, &gev.right };
-                const float panel_x[2] = { -0.55f, 0.55f };  // left hand lower-left, right hand lower-right
-                for (int hnd = 0; hnd < 2; hnd++) {
-                    const HandState& h = *ovh[hnd];
-                    if (!h.present || !h.has_landmarks) continue;
-                    float leye[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
-                                       panel_x[hnd] * tan_r * DOT_Z, -0.45f * tan_t * DOT_Z, -DOT_Z, 1 };
-                    float panel_mvp[16];
-                    mat_mul(proj, leye, panel_mvp);
-                    const float ov_alpha = armed[hnd] ? 1.f : 0.45f;
-                    for (int i = 0; i < 21 && ndraw < 54; i++) {
-                        float nx = h.landmarks[i][0];
-                        float ny = h.landmarks[i][1];
-                        // Normalized image coords -> panel-local. Image y is
-                        // down, eye-space y up, so negate y. If the hand reads
-                        // mirrored on hardware, change (nx - 0.5f) to (0.5f - nx).
-                        float lx =  (nx - 0.5f) * 2.f * PANEL_W;
-                        float ly = -(ny - 0.5f) * 2.f * PANEL_H;
-                        const float* base = (i == 4 || i == 8)
-                                              ? ((armed[hnd] && h.pinching) ? status_green : tip)
-                                              : lm_col;
-                        float col[4] = { base[0], base[1], base[2], ov_alpha };
-                        QuadDraw& ld = draws[ndraw++];
-                        memcpy(ld.mvp, panel_mvp, sizeof(panel_mvp));
-                        memcpy(ld.color, col, 4 * sizeof(float));
-                        ld.rect[0] = lx; ld.rect[1] = ly; ld.rect[2] = lm_r; ld.rect[3] = lm_r;
-                        ld.textured = false;
-                        ld.circle = true;
+            // Build one eye's draw list. eye_off = view-space x shift (±IPD/2
+            // in stereo, 0 in mono); it slides the camera and each head-locked
+            // HUD element so both eyes fuse at their design depths.
+            auto build_eye = [&](int eye, float eye_off) {
+                QuadDraw* dl = draws[eye];
+                int& nd = ndraw[eye];
+                float view[16], proj[16];
+                mat_from_pose(view_q, hp_neg, view);
+                view[12] += eye_off;                    // camera ±IPD/2, view space
+                mat_projection_vk(r, t, near_z, far_z, proj);
+
+                const float white[4] = { 1, 1, 1, 1 };
+                for (int i = 0; i < nscene; i++) {
+                    if (nd >= 64) break;
+                    const ScreenInst& s = *order[i].s;
+                    float model[16], vm[16], smvp[16];
+                    mat_from_pose(order[i].q, order[i].p, model);
+                    mat_mul(view, model, vm);
+                    mat_mul(proj, vm, smvp);
+                    float aspect = multi ? s.aspect : cap_aspect;
+                    float diag_m = s.cfg.size * (multi ? rack_size_scale : 1.f) * 0.0254f;
+                    float w2 = diag_m * aspect / std::sqrt(1 + aspect * aspect) * 0.5f;
+                    float h2 = diag_m / std::sqrt(1 + aspect * aspect) * 0.5f;
+                    QuadDraw& d = dl[nd++];
+                    memcpy(d.mvp, smvp, sizeof(smvp));
+                    memcpy(d.color, white, 4 * sizeof(float));
+                    d.rect[0] = 0; d.rect[1] = 0; d.rect[2] = w2; d.rect[3] = h2;
+                    memcpy(d.uv, s.uv, sizeof(s.uv));
+                    d.textured = true;
+                }
+                // `mvp` below (HUD blocks) previously reused the screen's matrix
+                // chain; the HUD only ever used proj-based matrices, which are
+                // built inline there already — no change needed.
+
+                // Head-locked 6DoF tracking-status dot: blue = 6DoF live,
+                // orange = positional tracking frozen (orientation-only). Fixed
+                // at bottom-CENTER of the view, flanked by the two per-hand
+                // status dots. mvp is projection * translate only, no world xf.
+                const float live[4] = { 0.35f, 0.76f, 1.f, 1.f };
+                const float frozen[4] = { 1.f, 0.55f, 0.2f, 1.f };
+                const float DOT_Z = 0.5f;          // meters in front of the eye
+                float tan_r = r / near_z, tan_t = t / near_z;
+                float eye_m[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
+                                    eye_off, -0.95f * tan_t * DOT_Z, -DOT_Z, 1 };
+                QuadDraw& d = dl[nd++];
+                mat_mul(proj, eye_m, d.mvp);
+                memcpy(d.color, sixdof_live ? live : frozen, 4 * sizeof(float));
+                float dot_r = 0.0045f * DOT_Z;     // ~0.5 degrees apparent size
+                d.rect[0] = 0; d.rect[1] = 0; d.rect[2] = dot_r; d.rect[3] = dot_r;
+                d.textured = false;
+                d.circle = true;
+
+                // Shared "pinch active" green — the pinch-status dot and the
+                // fingertip highlight must use the same green (design: the two
+                // feedback channels agree).
+                const float status_green[4] = { 0.20f, 0.90f, 0.30f, 1.f };
+
+                // Per-hand pinch/arm-status dots: one per hand at the bottom
+                // corners (left hand -> bottom-left, right hand -> bottom-right),
+                // flanking the centered VO dot. Only shown while the gesture
+                // pipeline is live. Per-hand states: grey = hand not seen, amber
+                // = seen but not armed, blue = armed (open palm), green =
+                // armed + pinching.
+                if (g_gestures.enabled()) {
+                    const float grey[4]  = { 0.5f, 0.5f, 0.5f, 1.f };
+                    const float amber[4] = { 1.f, 0.65f, 0.1f, 1.f };
+                    const float blue[4]  = { 0.30f, 0.55f, 1.f, 1.f };
+                    const HandState* hstate[2] = { &gev.left, &gev.right };
+                    const float hxf[2] = { -0.95f, 0.95f };  // left dot left, right dot right
+                    for (int i = 0; i < 2; i++) {
+                        const HandState& h = *hstate[i];
+                        const float* pcol = !h.present ? grey
+                                          : !armed[i]  ? amber
+                                          : (h.pinching ? status_green : blue);
+                        float peye[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
+                                           hxf[i] * tan_r * DOT_Z + eye_off, -0.95f * tan_t * DOT_Z, -DOT_Z, 1 };
+                        QuadDraw& pd = dl[nd++];
+                        mat_mul(proj, peye, pd.mvp);
+                        memcpy(pd.color, pcol, 4 * sizeof(float));
+                        pd.rect[0] = 0; pd.rect[1] = 0; pd.rect[2] = dot_r; pd.rect[3] = dot_r;
+                        pd.textured = false;
+                        pd.circle = true;
                     }
                 }
+
+                // Hand-landmark overlay: each hand as 21 dots in its own
+                // head-locked panel (left hand -> lower-left, right hand ->
+                // lower-right), shown only while that hand is seen. One shared
+                // panel mvp per hand; each landmark is a different rect center
+                // (the quad shader builds the quad from rect.xy ± rect.zw), so no
+                // per-dot matrix. Per-hand alpha follows that hand's armed flag;
+                // thumb tip (4) and index tip (8) go green when that hand is
+                // armed and pinching.
+                if (g_gestures.enabled()) {
+                    int cw = g_cam_w.load(std::memory_order_relaxed);
+                    int ch = g_cam_h.load(std::memory_order_relaxed);
+                    float aspect = (cw > 0 && ch > 0) ? float(cw) / float(ch) : 4.f / 3.f;
+                    const float PANEL_H = 0.09f * DOT_Z;        // half-height (~10° tall)
+                    const float PANEL_W = PANEL_H * aspect;     // aspect-preserved half-width
+                    const float lm_col[4] = { 0.40f, 0.90f, 1.00f, 1.f }; // soft cyan
+                    const float tip[4]    = { 1.00f, 0.85f, 0.10f, 1.f }; // yellow (thumb/index tip)
+                    const float lm_r = 0.0033f * DOT_Z;  // ~0.35 degrees apparent size (very thin)
+                    const HandState* ovh[2] = { &gev.left, &gev.right };
+                    const float panel_x[2] = { -0.55f, 0.55f };  // left hand lower-left, right hand lower-right
+                    for (int hnd = 0; hnd < 2; hnd++) {
+                        const HandState& h = *ovh[hnd];
+                        if (!h.present || !h.has_landmarks) continue;
+                        float leye[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
+                                           panel_x[hnd] * tan_r * DOT_Z + eye_off, -0.45f * tan_t * DOT_Z, -DOT_Z, 1 };
+                        float panel_mvp[16];
+                        mat_mul(proj, leye, panel_mvp);
+                        // Unarmed: the whole hand is drawn mildly transparent;
+                        // arming (open palm) makes it opaque.
+                        const float ov_alpha = armed[hnd] ? 1.f : 0.45f;
+                        for (int i = 0; i < 21 && nd < 64; i++) {
+                            float nx = h.landmarks[i][0];
+                            float ny = h.landmarks[i][1];
+                            // Normalized image coords -> panel-local. Image y is
+                            // down, eye-space y up, so negate y. If the hand reads
+                            // mirrored on hardware, change (nx-0.5f) to (0.5f-nx).
+                            float lx =  (nx - 0.5f) * 2.f * PANEL_W;
+                            float ly = -(ny - 0.5f) * 2.f * PANEL_H;
+                            const float* base = (i == 4 || i == 8)
+                                                  ? ((armed[hnd] && h.pinching) ? status_green : tip)
+                                                  : lm_col;
+                            float col[4] = { base[0], base[1], base[2], ov_alpha };
+                            QuadDraw& ld = dl[nd++];
+                            memcpy(ld.mvp, panel_mvp, sizeof(panel_mvp));
+                            memcpy(ld.color, col, 4 * sizeof(float));
+                            ld.rect[0] = lx; ld.rect[1] = ly; ld.rect[2] = lm_r; ld.rect[3] = lm_r;
+                            ld.textured = false;
+                            ld.circle = true;
+                        }
+                    }
+                }
+            };
+            if (stereo_active) {
+                build_eye(0, stereo_eye_offset(ipd_m, 0));
+                build_eye(1, stereo_eye_offset(ipd_m, 1));
+            } else {
+                build_eye(0, 0.f);
             }
         }
         static int draw_fail = 0;
-        if (vkr_draw(vk, draws, ndraw)) {
+        // Consecutive rebuilds with no present in between — a rebuild whose
+        // acquire+init succeed but whose presents never recover would loop
+        // forever otherwise (the 120-frame latch is unreachable once draw_fail
+        // resets on rebuild). Reset when a present lands.
+        static int rebuilds_without_present = 0;
+        // Stereo passes both stack lists (draws[1] is non-null even when
+        // empty — a null right list would silently downgrade to mono).
+        bool drew = stereo_active
+            ? vkr_draw_stereo(vk, draws[0], ndraw[0], draws[1], ndraw[1])
+            : vkr_draw(vk, draws[0], ndraw[0]);
+        if (drew) {
             draw_fail = 0;
+            rebuilds_without_present = 0;
             frames++;
-        } else if (++draw_fail >= 120) {
-            fprintf(stderr, "presentation failed repeatedly — shutting down\n");
-            g_running = false;
+        } else {
+            draw_fail++;
+            if (sout.direct && draw_fail == 30 && ++rebuilds_without_present > 3) {
+                fprintf(stderr, "display: %d rebuilds without a present — shutting down\n",
+                        rebuilds_without_present);
+                tele.log("error", "display rebuild livelock - shutting down");
+                g_running = false;
+            } else if (sout.direct && draw_fail == 30) {
+                // Panel mode likely changed under the lease (hardware 2D/3D
+                // toggle): rebuild the whole display chain against the current
+                // mode and re-pick stereo/mono from the new extent.
+                fprintf(stderr, "display: rebuilding after present failures (mode change?)\n");
+                tele.log("warn", "display mode changed - rebuilding");
+                uint32_t old_tex_w = vk.tex_w, old_tex_h = vk.tex_h, old_pitch = vk.tex_pitch;
+                vkr_destroy_device(vk);
+                direct_release(vk.instance);
+                direct_restore(dpy);
+                outputs = list_outputs(dpy);
+                for (auto& oo : outputs) if (oo.name == glasses.name) { glasses = oo; break; }
+                SurfaceOut nsout{};
+                if (direct_acquire(dpy, vk.instance, glasses.id, nsout)) {
+                    sout = nsout;
+                    vk.phys = sout.phys;
+                    vk.surface = sout.surface;
+                    if (vkr_init_device(vk) && vkr_init_swapchain(vk) &&
+                        vkr_init_pipeline(vk) && vkr_init_texture(vk, old_tex_w, old_tex_h, old_pitch)) {
+                        refresh_projection();
+                        draw_fail = 0;
+                        cursor_under.valid = false;
+                        printf("display: rebuilt, %s\n", stereo_active ? "stereo" : "mono");
+                    } else {
+                        fprintf(stderr, "display: rebuild failed — shutting down\n");
+                        g_running = false;
+                    }
+                } else {
+                    fprintf(stderr, "display: re-acquire failed — shutting down\n");
+                    g_running = false;
+                }
+            } else if (draw_fail >= 120) {
+                fprintf(stderr, "presentation failed repeatedly — shutting down\n");
+                g_running = false;
+            }
         }
         if (tnow - last_fps_t >= 2.0) {
             last_fps = float(frames / (tnow - last_fps_t));
             last_cap_fps = int(cap_frames / (tnow - last_fps_t) + 0.5);
-            printf("fps %.0f  cap %d/s  pose %s  6dof %s  head [%+.3f %+.3f %+.3f]m  dist %.2fm  size %.0f\"\n",
+            // Multi-screen has no single distance/size — report the rack scale
+            // multipliers instead.
+            printf(multi
+                   ? "fps %.0f  cap %d/s  pose %s  6dof %s  head [%+.3f %+.3f %+.3f]m  rack-dist x%.2f  rack-size x%.2f\n"
+                   : "fps %.0f  cap %d/s  pose %s  6dof %s  head [%+.3f %+.3f %+.3f]m  dist %.2fm  size %.0f\"\n",
                    last_fps, last_cap_fps, have_pose ? "ok" : "waiting",
                    sixdof_live ? "LIVE" : "frozen",
-                   head_p.x, head_p.y, head_p.z, distance, diag_in);
+                   head_p.x, head_p.y, head_p.z,
+                   multi ? rack_dist_scale : distance,
+                   multi ? rack_size_scale : diag_in);
             frames = 0;
             cap_frames = 0;
             last_fps_t = tnow;
@@ -1078,25 +1231,40 @@ int main(int argc, char** argv) {
             }
         }
         tele.send_hello(market, g_pid, fw, XR_DEVICE_TYPE_VITURE_CARINA);
-        tele.send_app(last_fps, sixdof_live, anchored, distance, diag_in,
-                      cap ? cap->name() : "none", sout.direct, rss_mb);
+        // Multi mode overloads distance/size with the rack scale multipliers
+        // (see Telemetry::send_app); single-screen sends meters/inches.
+        tele.send_app(last_fps, sixdof_live, anchored,
+                      multi ? rack_dist_scale : distance,
+                      multi ? rack_size_scale : diag_in,
+                      cap ? cap->name() : "none", sout.direct, rss_mb,
+                      stereo_active, int(scene.size()));
     }
 
-    app_state.distance = distance;
-    app_state.size = diag_in;
+    if (multi) {
+        app_state.rack_distance_scale = rack_dist_scale;
+        app_state.rack_size_scale = rack_size_scale;
+    } else {
+        app_state.distance = distance;
+        app_state.size = diag_in;
+    }
     save_state(app_state);
     printf("shutting down…\n");
+    // Panel back to 2D while the lease is still held: releasing the lease
+    // first makes X re-modeset the output, and the resulting DP retrain
+    // kills the restore's USB command (all 6 retries failed on hardware).
+    // With the link quiet the command lands first try; the mode change then
+    // drops our lease, which we were about to release anyway.
+    sbs_exit(g_provider, g_sbs_orig);
+    g_sbs_orig = -1;
     g_gestures.stop();
     tele.stop();
-    xr_device_provider_stop(g_provider);
-    xr_device_provider_shutdown(g_provider);
-    xr_device_provider_destroy(g_provider);
     if (cap) cap->stop();
     vkr_destroy_device(vk);                        // swapchain/surface/device first
     if (sout.direct) direct_release(vk.instance);  // drop the lease (instance teardown never does)
     vkr_destroy(vk);
     if (sout.direct) direct_restore(dpy);          // now the server can re-enable the output
     else if (sout.window) XDestroyWindow(dpy, sout.window);
+    sdk_shutdown();                                // safety net for error paths; panel already 2D here
     XCloseDisplay(dpy);
     return 0;
 }

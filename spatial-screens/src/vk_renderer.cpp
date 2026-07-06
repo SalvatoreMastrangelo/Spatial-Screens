@@ -16,8 +16,9 @@ struct PushBlock {
     float color[4];
     float rect[4];
     float flags[4];
+    float uv[4];
 };
-static_assert(sizeof(PushBlock) == 112, "push block layout drifted from shaders");
+static_assert(sizeof(PushBlock) == 128, "push block layout drifted from shaders");
 
 bool vkr_create_instance(VkRend& r, bool want_direct) {
     VkApplicationInfo app{};
@@ -467,7 +468,24 @@ void vkr_upload(VkRend& r, const void* pixels, size_t bytes) {
     r.tex_dirty = true;
 }
 
-bool vkr_draw(VkRend& r, const QuadDraw* draws, int n) {
+static void record_quads(VkCommandBuffer cb, VkRend& r, const QuadDraw* draws, int n) {
+    for (int i = 0; i < n; i++) {
+        PushBlock pb{};
+        memcpy(pb.mvp, draws[i].mvp, sizeof(pb.mvp));
+        memcpy(pb.color, draws[i].color, sizeof(pb.color));
+        memcpy(pb.rect, draws[i].rect, sizeof(pb.rect));
+        pb.flags[0] = draws[i].textured ? 1.f : 0.f;
+        pb.flags[1] = draws[i].circle ? 1.f : 0.f;
+        memcpy(pb.uv, draws[i].uv, sizeof(pb.uv));
+        vkCmdPushConstants(cb, r.playout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(pb), &pb);
+        vkCmdDraw(cb, 6, 1, 0, 0);
+    }
+}
+
+// lists[0] = left/full, lists[1] = right (nullptr => mono full-viewport).
+static bool draw_impl(VkRend& r, const QuadDraw* const lists[2], const int counts[2]) {
     if (!r.swapchain) return false;
     if (vkWaitForFences(r.device, 1, &r.fence[r.frame], VK_TRUE, 2000000000ull) != VK_SUCCESS)
         return false;  // wedged or lost device: let the caller bail to teardown
@@ -525,25 +543,27 @@ bool vkr_draw(VkRend& r, const QuadDraw* draws, int n) {
     rbi.clearValueCount = 1;
     rbi.pClearValues = &clear;
     vkCmdBeginRenderPass(cb, &rbi, VK_SUBPASS_CONTENTS_INLINE);
-    VkViewport vpt{0, 0, (float)r.extent.width, (float)r.extent.height, 0, 1};
-    VkRect2D sc{{0, 0}, r.extent};
-    vkCmdSetViewport(cb, 0, 1, &vpt);
-    vkCmdSetScissor(cb, 0, 1, &sc);
+
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, r.pipeline);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, r.playout,
                             0, 1, &r.dset, 0, nullptr);
-    for (int i = 0; i < n; i++) {
-        PushBlock pb{};
-        memcpy(pb.mvp, draws[i].mvp, sizeof(pb.mvp));
-        memcpy(pb.color, draws[i].color, sizeof(pb.color));
-        memcpy(pb.rect, draws[i].rect, sizeof(pb.rect));
-        pb.flags[0] = draws[i].textured ? 1.f : 0.f;
-        pb.flags[1] = draws[i].circle ? 1.f : 0.f;
-        vkCmdPushConstants(cb, r.playout,
-                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(pb), &pb);
-        vkCmdDraw(cb, 6, 1, 0, 0);
+    if (!lists[1]) {
+        VkViewport vpt{0, 0, (float)r.extent.width, (float)r.extent.height, 0, 1};
+        VkRect2D sc{{0, 0}, r.extent};
+        vkCmdSetViewport(cb, 0, 1, &vpt);
+        vkCmdSetScissor(cb, 0, 1, &sc);
+        record_quads(cb, r, lists[0], counts[0]);
+    } else {
+        uint32_t half = r.extent.width / 2;
+        for (int eye = 0; eye < 2; eye++) {
+            VkViewport vpt{(float)(eye * half), 0, (float)half, (float)r.extent.height, 0, 1};
+            VkRect2D sc{{int32_t(eye * half), 0}, {half, r.extent.height}};
+            vkCmdSetViewport(cb, 0, 1, &vpt);
+            vkCmdSetScissor(cb, 0, 1, &sc);
+            record_quads(cb, r, lists[eye], counts[eye]);
+        }
     }
+
     vkCmdEndRenderPass(cb);
     vkEndCommandBuffer(cb);
 
@@ -577,24 +597,54 @@ bool vkr_draw(VkRend& r, const QuadDraw* draws, int n) {
     return true;
 }
 
+bool vkr_draw(VkRend& r, const QuadDraw* draws, int n) {
+    const QuadDraw* lists[2] = {draws, nullptr};
+    const int counts[2] = {n, 0};
+    return draw_impl(r, lists, counts);
+}
+
+bool vkr_draw_stereo(VkRend& r, const QuadDraw* left, int nleft,
+                     const QuadDraw* right, int nright) {
+    const QuadDraw* lists[2] = {left, right};
+    const int counts[2] = {nleft, nright};
+    return draw_impl(r, lists, counts);
+}
+
 void vkr_destroy_device(VkRend& r) {
     if (r.device) {
         vkDeviceWaitIdle(r.device);
         vkr_destroy_texture(r);
         destroy_swapchain_objects(r);
+        // Every handle below belongs to this device — null each on destroy so
+        // the rebuild path (vkr_init_swapchain's `if (!r.pass)` cache, then a
+        // fresh vkr_init_pipeline/vkr_init_device) recreates them against the
+        // new device instead of reusing a stale one, and so a partway-failed
+        // rebuild never teardown-destroys first-device handles on the second.
         if (r.sampler) vkDestroySampler(r.device, r.sampler, nullptr);
+        r.sampler = VK_NULL_HANDLE;
         if (r.dpool) vkDestroyDescriptorPool(r.device, r.dpool, nullptr);
+        r.dpool = VK_NULL_HANDLE;
+        r.dset = VK_NULL_HANDLE;  // freed with its pool
         if (r.pipeline) vkDestroyPipeline(r.device, r.pipeline, nullptr);
+        r.pipeline = VK_NULL_HANDLE;
         if (r.playout) vkDestroyPipelineLayout(r.device, r.playout, nullptr);
+        r.playout = VK_NULL_HANDLE;
         if (r.dlayout) vkDestroyDescriptorSetLayout(r.device, r.dlayout, nullptr);
+        r.dlayout = VK_NULL_HANDLE;
         if (r.pass) vkDestroyRenderPass(r.device, r.pass, nullptr);
+        r.pass = VK_NULL_HANDLE;
         for (int i = 0; i < VkRend::FRAMES; i++) {
             if (r.sem_acquire[i]) vkDestroySemaphore(r.device, r.sem_acquire[i], nullptr);
+            r.sem_acquire[i] = VK_NULL_HANDLE;
             if (r.fence[i]) vkDestroyFence(r.device, r.fence[i], nullptr);
+            r.fence[i] = VK_NULL_HANDLE;
+            r.cmd[i] = VK_NULL_HANDLE;  // freed with the pool
         }
         if (r.pool) vkDestroyCommandPool(r.device, r.pool, nullptr);
+        r.pool = VK_NULL_HANDLE;
         vkDestroyDevice(r.device, nullptr);
         r.device = VK_NULL_HANDLE;
+        r.queue = VK_NULL_HANDLE;
     }
     if (r.surface) vkDestroySurfaceKHR(r.instance, r.surface, nullptr);
     r.surface = VK_NULL_HANDLE;

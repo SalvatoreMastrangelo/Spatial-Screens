@@ -6,6 +6,7 @@ layout(push_constant) uniform PC {
     vec4 color;
     vec4 rect;    // cx, cy, half_w, half_h in quad-local meters
     vec4 flags;   // x: 1 = sample texture, 0 = solid color
+    vec4 uv;      // u0,v0,u1,v1 sub-rect of the shared texture
 } pc;
 
 layout(location = 0) out vec2 v_uv;
@@ -16,8 +17,9 @@ void main() {
     const vec2 c[4] = vec2[4](vec2(-1, -1), vec2(1, -1), vec2(1, 1), vec2(-1, 1));
     vec2 p = c[idx[gl_VertexIndex]];
     // Row 0 of the capture buffer is the top of the source screen; top of
-    // the quad (p.y = +1) must sample v = 0.
-    v_uv = vec2(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
+    // the quad (p.y = +1) must sample v = uv.y (the sub-rect's top).
+    vec2 base = vec2(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
+    v_uv = pc.uv.xy + base * (pc.uv.zw - pc.uv.xy);
     vec2 local = pc.rect.xy + p * pc.rect.zw;
     gl_Position = pc.mvp * vec4(local, 0.0, 1.0);
 }
