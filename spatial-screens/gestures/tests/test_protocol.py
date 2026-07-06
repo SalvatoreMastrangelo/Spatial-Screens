@@ -4,23 +4,32 @@ import json
 from protocol import encode_event, encode_frame, read_frame
 
 
-def _reader_from_bytes(data):
-    buf = io.BytesIO(data)
-
+def _reader_from_bytes(buf):
+    state = {"pos": 0}
     def read_exact(n):
-        chunk = buf.read(n)
-        return chunk if chunk else None
-
+        if state["pos"] + n > len(buf):
+            return None
+        chunk = buf[state["pos"]:state["pos"] + n]
+        state["pos"] += n
+        return chunk
     return read_exact
 
 
-def test_encode_then_read_frame_round_trips():
-    raw = b"\x01\x02\x03\x04\x05\x06"
-    msg = encode_frame(1.5, 3, 2, 0, raw)
+def test_frame_two_planes_roundtrip():
+    left = bytes(range(10)) * 4      # 40 bytes
+    right = bytes(range(40, 50)) * 4 # 40 bytes, distinct
+    buf = encode_frame(1.25, 8, 5, 0, [left, right])
+    ts, w, h, fmt, planes = read_frame(_reader_from_bytes(buf))
+    assert (ts, w, h, fmt) == (1.25, 8, 5, 0)
+    assert len(planes) == 2
+    assert planes[0] == left
+    assert planes[1] == right
 
-    t, w, h, fmt, data = read_frame(_reader_from_bytes(msg))
-
-    assert (t, w, h, fmt, data) == (1.5, 3, 2, 0, raw)
+def test_frame_single_plane_roundtrip():
+    data = bytes(range(20))
+    buf = encode_frame(2.0, 4, 5, 0, [data])
+    ts, w, h, fmt, planes = read_frame(_reader_from_bytes(buf))
+    assert planes == [data]
 
 
 def test_read_frame_returns_none_on_clean_eof():

@@ -1,7 +1,7 @@
 """Wire protocol between spatial-screens (C++) and the gesture sidecar.
 
 Frame forwarding (spatial-screens -> sidecar), length-prefixed binary:
-    [u32 len][f64 timestamp][i32 width][i32 height][u8 format][raw bytes]
+    [u32 len][f64 timestamp][i32 width][i32 height][u8 format][u8 n_planes][raw bytes]
 
 Gesture events (sidecar -> spatial-screens), newline-delimited JSON, one
 object per processed frame. See
@@ -12,15 +12,15 @@ import json
 import struct
 
 _LENGTH_PREFIX = struct.Struct("<I")
-_FRAME_HEADER = struct.Struct("<dii B")  # timestamp, width, height, format
+_FRAME_HEADER = struct.Struct("<dii B B")  # timestamp, width, height, format, n_planes
 
 
 def read_frame(read_exact):
     """Read one frame message via read_exact(n) -> bytes|None.
 
-    Returns (timestamp, width, height, format, data), or None on clean EOF
-    (read_exact returned None while reading the length prefix, or the
-    connection dropped partway through the payload).
+    Returns (timestamp, width, height, format, planes), where planes is a list
+    of n_planes equal-size byte buffers (GRAY8: one byte per pixel), or None on
+    clean EOF / short read.
     """
     length_bytes = read_exact(_LENGTH_PREFIX.size)
     if length_bytes is None:
@@ -29,16 +29,18 @@ def read_frame(read_exact):
     payload = read_exact(length)
     if payload is None or len(payload) < length:
         return None
-    timestamp, width, height, fmt = _FRAME_HEADER.unpack(payload[: _FRAME_HEADER.size])
-    data = payload[_FRAME_HEADER.size :]
-    return timestamp, width, height, fmt, data
+    timestamp, width, height, fmt, n_planes = _FRAME_HEADER.unpack(
+        payload[: _FRAME_HEADER.size])
+    body = payload[_FRAME_HEADER.size :]
+    plane_size = len(body) // n_planes if n_planes else 0
+    planes = [body[i * plane_size : (i + 1) * plane_size] for i in range(n_planes)]
+    return timestamp, width, height, fmt, planes
 
 
-def encode_frame(timestamp, width, height, fmt, data):
-    """Inverse of read_frame — used by spatial-screens (conceptually; the
-    C++ side has its own byte-for-byte equivalent) and by tests here to
-    build synthetic input."""
-    payload = _FRAME_HEADER.pack(timestamp, width, height, fmt) + data
+def encode_frame(timestamp, width, height, fmt, planes):
+    """Inverse of read_frame. planes is a list of equal-size byte buffers."""
+    body = b"".join(planes)
+    payload = _FRAME_HEADER.pack(timestamp, width, height, fmt, len(planes)) + body
     return _LENGTH_PREFIX.pack(len(payload)) + payload
 
 
