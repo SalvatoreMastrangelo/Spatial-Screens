@@ -448,24 +448,48 @@ int main(int argc, char** argv) {
     // The lease just reflowed the desktop and RandR events weren't selected
     // yet — re-snapshot so both the scene's monitor matching and cursor
     // mapping start from live geometry.
-    outputs = list_outputs(dpy);
+    //
+    // run.sh applies the stereo workspace only AFTER the lease settles the
+    // layout (mutter reapplies its stored config on both the SBS adopt and
+    // the lease, clobbering anything set earlier), so the VS monitors and
+    // the panel's scaled rect land a beat after this point — wait for the
+    // configured grid, re-resolving the capture rect every tick.
+    int want_tiles = 0;
+    if (!force_window && o.workspace.size() == 3 && o.workspace[1] == 'x' &&
+        o.workspace[0] >= '1' && o.workspace[0] <= '9' &&
+        o.workspace[2] >= '1' && o.workspace[2] <= '9')
+        want_tiles = (o.workspace[0] - '0') * (o.workspace[2] - '0');
 
     // Capture source rect = what the xshm backend grabs (the whole capture
     // output). UVs slice it; test/portal frames are sliced the same way.
     OutputRect cap_src{};
-    for (auto& oo : outputs)
-        if (!capture_name.empty() ? oo.name == capture_name
-                                  : oo.name != glasses.name) { cap_src = oo; break; }
-    MonRect fb_rect{cap_src.name, cap_src.x, cap_src.y, cap_src.w, cap_src.h};
-
     std::vector<MonRect> vs_mons;
-    for (auto& m : list_monitors(dpy)) {
-        bool inside = m.x >= cap_src.x && m.y >= cap_src.y &&
-                      m.x + m.w <= cap_src.x + cap_src.w &&
-                      m.y + m.h <= cap_src.y + cap_src.h;
-        if (m.name.rfind("VS", 0) == 0 && inside)
-            vs_mons.push_back({m.name, m.x, m.y, m.w, m.h});
+    for (int waited = 0;; waited += 250) {
+        outputs = list_outputs(dpy);
+        cap_src = {};
+        for (auto& oo : outputs)
+            if (!capture_name.empty() ? oo.name == capture_name
+                                      : oo.name != glasses.name) { cap_src = oo; break; }
+        vs_mons.clear();
+        for (auto& m : list_monitors(dpy)) {
+            bool inside = m.x >= cap_src.x && m.y >= cap_src.y &&
+                          m.x + m.w <= cap_src.x + cap_src.w &&
+                          m.y + m.h <= cap_src.y + cap_src.h;
+            if (m.name.rfind("VS", 0) == 0 && inside)
+                vs_mons.push_back({m.name, m.x, m.y, m.w, m.h});
+        }
+        if (want_tiles <= 1 || (int)vs_mons.size() >= want_tiles) break;
+        if (waited >= 10000) {
+            fprintf(stderr, "scene: workspace %s never appeared (%zu/%d tiles) — "
+                            "continuing without it\n",
+                    o.workspace.c_str(), vs_mons.size(), want_tiles);
+            break;
+        }
+        if (!waited) printf("scene: waiting for workspace monitors (%s grid)…\n",
+                            o.workspace.c_str());
+        usleep(250 * 1000);
     }
+    MonRect fb_rect{cap_src.name, cap_src.x, cap_src.y, cap_src.w, cap_src.h};
     std::vector<ScreenInst> scene;
     if (!o.screens.empty() || vs_mons.size() > 1) {
         scene = scene_build(o.screens, vs_mons, fb_rect);

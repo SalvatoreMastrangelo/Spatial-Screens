@@ -1002,10 +1002,14 @@ git commit -m "spatial-screens: SBS panel lifecycle module + sbs-spike --restore
 # Stereo multi-screen workspace: when the config enables stereo and a
 # workspace grid, upscale the capture panel (xrandr --scale) so the desktop
 # framebuffer is grid*1920x1200, and split it into VS1..VSn logical monitors
-# (--setmonitor). Restore runs on EXIT even if the app segfaults — this
-# wrapper deliberately does NOT exec. Config keys are grepped from the conf
-# file; CLI-only overrides (e.g. --stereo passed to the app) are invisible
-# here, so keep stereo/workspace in the conf.
+# (--setmonitor). The workspace is applied only AFTER the app takes its
+# display lease: mutter reapplies its stored monitor config on both the SBS
+# mode adopt and the lease, clobbering anything set earlier (seen on
+# hardware 2026-07-06) — the app waits for the grid before building its
+# scene. Restore runs on EXIT even if the app segfaults — this wrapper
+# deliberately does NOT exec. Config keys are grepped from the conf file;
+# CLI-only overrides (e.g. --stereo passed to the app) are invisible here,
+# so keep stereo/workspace in the conf.
 # See docs/specs/2026-07-05-stereo-3d-design.md §1.
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1017,16 +1021,22 @@ conf_get() { [ -f "$CONF" ] || return 0; sed -n "s/^[[:space:]]*$1[[:space:]]*=[
 STEREO="$(conf_get stereo)";       STEREO="${STEREO:-true}"
 case "$STEREO" in true|1|yes) STEREO=true ;; *) STEREO=false ;; esac
 WORKSPACE="$(conf_get workspace)"; WORKSPACE="${WORKSPACE:-2x2}"
+GLASSES="DP-1"  # roadmap: unify with the app's detect-by-mode identity
 PANEL="$(conf_get capture)"
 if [ -z "$PANEL" ]; then  # default: first connected non-glasses output
-    PANEL="$(xrandr | awk '/ connected/ {print $1}' | grep -v '^DP-1$' | head -1 || true)"
+    PANEL="$(xrandr | awk '/ connected/ {print $1}' | grep -v "^${GLASSES}\$" | head -1 || true)"
 fi
 
 TILE_W=1920 TILE_H=1200
 MONITORS=()
 SCALED=0
+APP_PID=""
 cleanup() {
     local m
+    if [ -n "$APP_PID" ] && kill -0 "$APP_PID" 2>/dev/null; then
+        kill -TERM "$APP_PID" 2>/dev/null || true
+        wait "$APP_PID" 2>/dev/null || true
+    fi
     for m in "${MONITORS[@]:-}"; do
         [ -n "$m" ] && xrandr --delmonitor "$m" >/dev/null 2>&1 || true
     done
@@ -1034,48 +1044,75 @@ cleanup() {
 }
 trap cleanup EXIT
 
+COLS="${WORKSPACE%x*}" ROWS="${WORKSPACE#*x}"
+WANT_WS=false
 if [ "$STEREO" = "true" ] && [ "$WORKSPACE" != "off" ] && [ -n "$PANEL" ]; then
-    COLS="${WORKSPACE%x*}" ROWS="${WORKSPACE#*x}"
     if [[ "$COLS" =~ ^[1-9]$ ]] && [[ "$ROWS" =~ ^[1-9]$ ]]; then
-        FB_W=$((TILE_W * COLS)) FB_H=$((TILE_H * ROWS))
-        # Native (preferred) mode of the panel — first mode line flagged '+'.
-        NAT="$(xrandr | awk -v out="$PANEL" '
-            $1 == out {f=1; next} f && /\+/ {print $1; exit} f && /connected/ {exit}')"
-        NAT_W="${NAT%x*}" NAT_H="${NAT#*x}"
-        if [ -n "$NAT_W" ] && [ -n "$NAT_H" ]; then
-            SX=$(awk -v a="$FB_W" -v b="$NAT_W" 'BEGIN{printf "%.6f", a/b}')
-            SY=$(awk -v a="$FB_H" -v b="$NAT_H" 'BEGIN{printf "%.6f", a/b}')
-            echo "workspace: $PANEL -> ${FB_W}x${FB_H} (scale ${SX}x${SY}), grid ${COLS}x${ROWS}"
-            xrandr --output "$PANEL" --scale "${SX}x${SY}"
-            SCALED=1
-            # Tile at the panel's framebuffer origin, not (0,0): --scale/reflow
-            # (or a multi-output layout) can move the panel, and the app's
-            # containment filter drops every VS monitor not inside it. Read +X+Y
-            # AFTER the scale; default to origin if the geometry can't be parsed.
-            PGEOM="$(xrandr | awk -v out="$PANEL" \
-                '$1==out {for(i=1;i<=NF;i++) if($i ~ /^[0-9]+x[0-9]+[+-][0-9]+[+-][0-9]+$/){print $i; exit}}' || true)"
-            PX=0 PY=0
-            if [[ "$PGEOM" =~ \+([0-9]+)\+([0-9]+)$ ]]; then
-                PX="${BASH_REMATCH[1]}" PY="${BASH_REMATCH[2]}"
-            fi
-            i=1
-            for ((row = 0; row < ROWS; row++)); do
-                for ((col = 0; col < COLS; col++)); do
-                    name="VS$i"
-                    owner="none"; [ "$i" -eq 1 ] && owner="$PANEL"
-                    xrandr --setmonitor "$name" \
-                        "${TILE_W}/300x${TILE_H}/190+$((PX + col * TILE_W))+$((PY + row * TILE_H))" \
-                        "$owner"
-                    MONITORS+=("$name")
-                    i=$((i + 1))
-                done
-            done
-        else
-            echo "workspace: cannot read $PANEL native mode — skipping split" >&2
-        fi
+        WANT_WS=true
     else
         echo "workspace: bad grid '$WORKSPACE' (want e.g. 2x2) — skipping split" >&2
     fi
+fi
+
+apply_workspace() {
+    local FB_W FB_H NAT NAT_W NAT_H SX SY PGEOM PX PY i name owner row col
+    FB_W=$((TILE_W * COLS)) FB_H=$((TILE_H * ROWS))
+    # Native (preferred) mode of the panel — first mode line flagged '+'.
+    NAT="$(xrandr | awk -v out="$PANEL" '
+        $1 == out {f=1; next} f && /\+/ {print $1; exit} f && /connected/ {exit}')"
+    NAT_W="${NAT%x*}" NAT_H="${NAT#*x}"
+    if [ -z "$NAT_W" ] || [ -z "$NAT_H" ]; then
+        echo "workspace: cannot read $PANEL native mode — skipping split" >&2
+        return 0
+    fi
+    SX=$(awk -v a="$FB_W" -v b="$NAT_W" 'BEGIN{printf "%.6f", a/b}')
+    SY=$(awk -v a="$FB_H" -v b="$NAT_H" 'BEGIN{printf "%.6f", a/b}')
+    echo "workspace: $PANEL -> ${FB_W}x${FB_H} (scale ${SX}x${SY}), grid ${COLS}x${ROWS}"
+    xrandr --output "$PANEL" --scale "${SX}x${SY}"
+    SCALED=1
+    # Tile at the panel's framebuffer origin, not (0,0): --scale/reflow
+    # (or a multi-output layout) can move the panel, and the app's
+    # containment filter drops every VS monitor not inside it. Read +X+Y
+    # AFTER the scale; default to origin if the geometry can't be parsed.
+    PGEOM="$(xrandr | awk -v out="$PANEL" \
+        '$1==out {for(i=1;i<=NF;i++) if($i ~ /^[0-9]+x[0-9]+[+-][0-9]+[+-][0-9]+$/){print $i; exit}}' || true)"
+    PX=0 PY=0
+    if [[ "$PGEOM" =~ \+([0-9]+)\+([0-9]+)$ ]]; then
+        PX="${BASH_REMATCH[1]}" PY="${BASH_REMATCH[2]}"
+    fi
+    i=1
+    for ((row = 0; row < ROWS; row++)); do
+        for ((col = 0; col < COLS; col++)); do
+            name="VS$i"
+            owner="none"; [ "$i" -eq 1 ] && owner="$PANEL"
+            xrandr --setmonitor "$name" \
+                "${TILE_W}/300x${TILE_H}/190+$((PX + col * TILE_W))+$((PY + row * TILE_H))" \
+                "$owner"
+            MONITORS+=("$name")
+            i=$((i + 1))
+        done
+    done
+}
+
+if [ "$WANT_WS" = true ]; then
+    "$DIR/spatial-screens" "$@" &
+    APP_PID=$!
+    # Wait for the app's display lease — the LAST layout reflow. A leased
+    # connector reads "disconnected" in xrandr. Plain grep (not -q): -q
+    # exits early and SIGPIPEs xrandr, which pipefail turns into a miss.
+    # The timeout covers window-fallback runs that never take a lease.
+    for _ in $(seq 1 150); do
+        kill -0 "$APP_PID" 2>/dev/null || break
+        if xrandr | grep "^${GLASSES} disconnected" >/dev/null; then break; fi
+        sleep 0.2
+    done
+    sleep 1  # let mutter finish its post-lease re-layout
+    if kill -0 "$APP_PID" 2>/dev/null; then
+        apply_workspace
+    fi
+    rc=0; wait "$APP_PID" || rc=$?
+    APP_PID=""
+    exit "$rc"
 fi
 
 "$DIR/spatial-screens" "$@"

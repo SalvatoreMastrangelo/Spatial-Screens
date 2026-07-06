@@ -15,6 +15,22 @@ static bool output_is_wide(Display* dpy, const std::string& name) {
     return false;
 }
 
+// set_display_mode with retries: the command shares the USB-C cable with the
+// DP link, and a mode change or lease release retrains that link — a
+// transient USB execution error (rc -4, seen on hardware at exit) would
+// otherwise strand the panel in SBS.
+static int set_mode_retry(XRDeviceProviderHandle provider, int mode, const char* what) {
+    int rc = -1;
+    for (int attempt = 0; attempt < 4; attempt++) {
+        if (attempt) usleep(500 * 1000);
+        rc = xr_device_provider_set_display_mode(provider, mode);
+        printf("sbs: %s mode 0x%02x -> rc %d%s\n", what, mode, rc,
+               rc == 0 || attempt == 3 ? "" : " (retrying)");
+        if (rc == 0) break;
+    }
+    return rc;
+}
+
 int sbs_enter(XRDeviceProviderHandle provider, Display* dpy,
               const std::string& output_name, int timeout_ms) {
     // Reading BEFORE any mode command is reliable (lag appears after
@@ -22,7 +38,7 @@ int sbs_enter(XRDeviceProviderHandle provider, Display* dpy,
     int orig = xr_device_provider_get_display_mode(provider);
     if (orig < 0) orig = MODE_1920_1200_120HZ;
 
-    int rc = xr_device_provider_set_display_mode(provider, MODE_3840_1200_90HZ);
+    int rc = set_mode_retry(provider, MODE_3840_1200_90HZ, "enter");
     if (rc != 0) {
         fprintf(stderr, "sbs: set_display_mode(0x45) failed (rc %d) — staying 2D\n", rc);
         return -1;
@@ -36,13 +52,11 @@ int sbs_enter(XRDeviceProviderHandle provider, Display* dpy,
     }
     fprintf(stderr, "sbs: %s never reported 3840-wide in %d ms — restoring 2D\n",
             output_name.c_str(), timeout_ms);
-    int rc2 = xr_device_provider_set_display_mode(provider, orig);
-    fprintf(stderr, "sbs: restore mode 0x%02x -> rc %d\n", orig, rc2);
+    set_mode_retry(provider, orig, "restore");
     return -1;
 }
 
 void sbs_exit(XRDeviceProviderHandle provider, int orig_mode) {
     if (orig_mode < 0 || !provider) return;
-    int rc = xr_device_provider_set_display_mode(provider, orig_mode);
-    printf("sbs: restore mode 0x%02x -> rc %d\n", orig_mode, rc);
+    set_mode_retry(provider, orig_mode, "restore");
 }
