@@ -71,6 +71,19 @@ void Telemetry::send_app(float fps, bool sixdof, bool anchored, float distance,
     ws_.broadcast(buf);
 }
 
+void Telemetry::send_hands(bool lp, bool l_has, float ld, bool rp, bool r_has, float rd) {
+    if (!enabled_) return;
+    long t = now_ms();
+    if (t - last_hands_ms_ < 100) return;   // <= 10 Hz
+    last_hands_ms_ = t;
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             R"({"type":"hands","left_present":%s,"left_depth":%.3f,"right_present":%s,"right_depth":%.3f})",
+             lp ? "true" : "false", l_has ? ld : -1.0f,
+             rp ? "true" : "false", r_has ? rd : -1.0f);
+    ws_.broadcast(buf);
+}
+
 void Telemetry::log(const char* level, const char* text) {
     if (!enabled_) return;
     char buf[512];

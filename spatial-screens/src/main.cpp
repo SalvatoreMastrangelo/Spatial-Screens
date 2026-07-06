@@ -1072,7 +1072,15 @@ int main(int argc, char** argv) {
                         QuadDraw& pd = dl[nd++];
                         mat_mul(proj, peye, pd.mvp);
                         memcpy(pd.color, pcol, 4 * sizeof(float));
-                        pd.rect[0] = 0; pd.rect[1] = 0; pd.rect[2] = dot_r; pd.rect[3] = dot_r;
+                        float pr = dot_r;
+                        if (h.has_depth && h.depth > 0.05f) {
+                            // Nearer hand -> bigger dot (cheap in-glasses depth
+                            // cue; the HUD has no glyphs). 0.5 m reads nominal.
+                            float s = 0.5f / h.depth;
+                            if (s < 0.6f) s = 0.6f; else if (s > 1.8f) s = 1.8f;
+                            pr = dot_r * s;
+                        }
+                        pd.rect[0] = 0; pd.rect[1] = 0; pd.rect[2] = pr; pd.rect[3] = pr;
                         pd.textured = false;
                         pd.circle = true;
                     }
@@ -1240,6 +1248,8 @@ int main(int argc, char** argv) {
                       multi ? rack_size_scale : diag_in,
                       cap ? cap->name() : "none", sout.direct, rss_mb,
                       stereo_active, int(scene.size()));
+        tele.send_hands(gev.left.present, gev.left.has_depth, gev.left.depth,
+                        gev.right.present, gev.right.has_depth, gev.right.depth);
     }
 
     if (multi) {

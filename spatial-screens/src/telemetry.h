@@ -30,6 +30,9 @@ public:
     void send_app(float fps, bool sixdof, bool anchored, float distance,
                   float size_in, const char* backend, bool direct, int rss_mb,
                   bool stereo, int screens);                                              // <= 2 Hz
+    // Per-hand presence + fused stereo depth (meters); depth < 0 = none.
+    void send_hands(bool left_present, bool left_has_depth, float left_depth,
+                    bool right_present, bool right_has_depth, float right_depth); // <= 10 Hz
     // Unthrottled. text must not contain quotes or backslashes (no escaping,
     // same contract as the bridge's log messages).
     void log(const char* level, const char* text);
@@ -42,5 +45,5 @@ private:
     wsrv::Server ws_;
     std::atomic<bool> reset_req_{false};
     bool enabled_ = false;
-    long last_hello_ms_ = 0, last_pose_ms_ = 0, last_app_ms_ = 0;
+    long last_hello_ms_ = 0, last_pose_ms_ = 0, last_app_ms_ = 0, last_hands_ms_ = 0;
 };
