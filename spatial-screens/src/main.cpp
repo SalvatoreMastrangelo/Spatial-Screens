@@ -623,6 +623,7 @@ int main(int argc, char** argv) {
     double last_fps_t = now_s(), last_cap_t = 0;
     int frames = 0, cap_frames = 0, last_cap_fps = 0;
     float last_fps = 0;
+    double last_mode_poll_t = 0; int last_polled_mode = -1;
     int rss_mb = 0;
     bool rss_warned = false, rss_critical = false;
     bool have_pose = false;
@@ -710,6 +711,21 @@ int main(int argc, char** argv) {
         if (recenter_at > 0 && tnow >= recenter_at) {
             have_pose = false;
             recenter_at = -1;
+        }
+
+        // ---- informational display-mode poll (1 Hz). NEVER gates rendering:
+        // get_display_mode lags a full command cycle (spike finding #1).
+        if (sout.direct && tnow - last_mode_poll_t > 1.0) {
+            last_mode_poll_t = tnow;
+            int m = xr_device_provider_get_display_mode(g_provider);
+            if (m >= 0 && m != last_polled_mode) {
+                if (last_polled_mode >= 0) {
+                    char msg[64];
+                    snprintf(msg, sizeof(msg), "panel mode now 0x%02x (informational)", m);
+                    tele.log("info", msg);
+                }
+                last_polled_mode = m;
+            }
         }
 
         // ---- gestures
@@ -1050,9 +1066,43 @@ int main(int argc, char** argv) {
         if (drew) {
             draw_fail = 0;
             frames++;
-        } else if (++draw_fail >= 120) {
-            fprintf(stderr, "presentation failed repeatedly — shutting down\n");
-            g_running = false;
+        } else {
+            draw_fail++;
+            if (sout.direct && draw_fail == 30) {
+                // Panel mode likely changed under the lease (hardware 2D/3D
+                // toggle): rebuild the whole display chain against the current
+                // mode and re-pick stereo/mono from the new extent.
+                fprintf(stderr, "display: rebuilding after present failures (mode change?)\n");
+                tele.log("warn", "display mode changed - rebuilding");
+                uint32_t old_tex_w = vk.tex_w, old_tex_h = vk.tex_h, old_pitch = vk.tex_pitch;
+                vkr_destroy_device(vk);
+                direct_release(vk.instance);
+                direct_restore(dpy);
+                outputs = list_outputs(dpy);
+                for (auto& oo : outputs) if (oo.name == glasses.name) { glasses = oo; break; }
+                SurfaceOut nsout{};
+                if (direct_acquire(dpy, vk.instance, glasses.id, nsout)) {
+                    sout = nsout;
+                    vk.phys = sout.phys;
+                    vk.surface = sout.surface;
+                    if (vkr_init_device(vk) && vkr_init_swapchain(vk) &&
+                        vkr_init_pipeline(vk) && vkr_init_texture(vk, old_tex_w, old_tex_h, old_pitch)) {
+                        refresh_projection();
+                        draw_fail = 0;
+                        cursor_under.valid = false;
+                        printf("display: rebuilt, %s\n", stereo_active ? "stereo" : "mono");
+                    } else {
+                        fprintf(stderr, "display: rebuild failed — shutting down\n");
+                        g_running = false;
+                    }
+                } else {
+                    fprintf(stderr, "display: re-acquire failed — shutting down\n");
+                    g_running = false;
+                }
+            } else if (draw_fail >= 120) {
+                fprintf(stderr, "presentation failed repeatedly — shutting down\n");
+                g_running = false;
+            }
         }
         if (tnow - last_fps_t >= 2.0) {
             last_fps = float(frames / (tnow - last_fps_t));
