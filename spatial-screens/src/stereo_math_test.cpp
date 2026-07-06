@@ -4,6 +4,7 @@
 #include "config.h"
 #include "scene.h"
 #include "pose_math.h"
+#include "stereo.h"
 #include <cmath>
 #include <cstdio>
 
@@ -143,10 +144,30 @@ static void test_scene_pose() {
     CHECK(std::fabs(fwd.x - 1.f) < 1e-5f);  // screen's -z axis points at +x (outward)
 }
 
+static void test_stereo_math() {
+    // Camera shifted +x (right eye) moves world points -x in view space:
+    // right eye gets a NEGATIVE view-space offset, left eye positive.
+    CHECK(std::fabs(stereo_eye_offset(0.063f, 0) - 0.0315f) < 1e-6f);
+    CHECK(std::fabs(stereo_eye_offset(0.063f, 1) + 0.0315f) < 1e-6f);
+
+    // Per-eye frustum: same 52° diagonal FOV math main.cpp uses, with per-eye
+    // pixel dims. 1920x1200 @ near 0.1: diag=2264.7, half=tan(26°)=0.48773.
+    float r = 0, t = 0;
+    stereo_eye_frustum(1920, 1200, 52.f, 0.1f, r, t);
+    CHECK(std::fabs(r - 0.48773f * 1920.f / 2264.7f * 0.1f) < 1e-4f);
+    CHECK(std::fabs(t - 0.48773f * 1200.f / 2264.7f * 0.1f) < 1e-4f);
+    CHECK(r > t);                        // landscape
+    // Same aspect at mono full-width would double r; per-eye must NOT.
+    float rf = 0, tf = 0;
+    stereo_eye_frustum(3840, 1200, 52.f, 0.1f, rf, tf);
+    CHECK(rf > r * 1.1f);                // sanity: full-width frustum is wider
+}
+
 int main() {
     test_config_keys();
     test_scene_build();
     test_scene_pose();
+    test_stereo_math();
     if (failures == 0) { printf("stereo_math_test: all checks passed\n"); return 0; }
     printf("stereo_math_test: %d failure(s)\n", failures);
     return 1;
