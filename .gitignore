@@ -7,6 +7,7 @@ bridge/viture-bridge
 spatial-screens/spatial-screens
 spatial-screens/vk-test
 spatial-screens/capture-test
+spatial-screens/sbs-spike
 .worktrees/
 .claude/worktrees/
 spatial-screens/gestures/models/

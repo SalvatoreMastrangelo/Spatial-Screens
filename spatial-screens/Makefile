@@ -59,6 +59,16 @@ shaders/%.frag.spv.h: shaders/%.frag
 vk-test: src/vk_test.o src/vk_renderer.o src/vk_surface.o
 	$(CXX) $^ -o $@ $(VK_LIBS)
 
+# Throwaway hardware spike: does SBS/3D mode switching work on Linux?
+# SDK-only (no Vulkan/capture). Run via ./run-spike.sh. See
+# docs/testing/2026-07-05-sbs-3d-spike-handoff.md.
+src/sbs_spike.o: src/sbs_spike.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+sbs-spike: src/sbs_spike.o
+	$(CXX) $^ -o $@ -L$(SDK_LIB) -lglasses -lpthread \
+		-Wl,--disable-new-dtags,-rpath,'$$ORIGIN/$(SDK_LIB)' \
+		-Wl,--allow-shlib-undefined
+
 CAPTURE_OBJS := src/capture.o src/capture_xshm.o src/capture_portal.o
 
 # Capture objects don't touch Vulkan or the shaders — lighter prereqs.
@@ -74,6 +84,6 @@ capture-test: src/capture_test.o $(CAPTURE_OBJS) src/vk_surface.o
 run: spatial-screens
 	./run.sh
 clean:
-	rm -f spatial-screens vk-test capture-test gesture-parse-test src/*.o
+	rm -f spatial-screens vk-test capture-test gesture-parse-test sbs-spike src/*.o
 
 .PHONY: run clean test
