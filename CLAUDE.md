@@ -32,6 +32,12 @@ Gesture sidecar, in `spatial-screens/gestures/`: `pip install -r requirements.tx
 - WebHID path (3DoF) is Chrome/Edge only. In the device chooser, pick the "VITURE Microphone" companion device (VID `0x35ca`, PID `0x1102`) — the vendor HID interfaces enumerate there, not on the main `0x1104` device.
 - 6DoF poses use OpenGL/EUS coordinates: x→right, y→up, z→backward.
 
+## Branching & worktrees
+
+- New features are built in isolated git worktrees (under `.claude/worktrees/`), so multiple agents can work in parallel without colliding. Never develop a feature directly on `master` or `main`.
+- `master` is the integration branch: merge a feature into `master` only once it's finalized and working in its worktree.
+- `main` is the production / ship branch. Merging into `main` requires the user's explicit authorization each time — never merge to `main` on your own initiative.
+
 ## Conventions
 
 - Design/spec docs go in `docs/specs/` named `YYYY-MM-DD-name.md`.
