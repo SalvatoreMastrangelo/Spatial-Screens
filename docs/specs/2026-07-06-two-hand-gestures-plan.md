@@ -247,7 +247,7 @@ def test_select_hand_mirror_flips_label():
 
 def test_select_hand_absent_returns_none():
     hands = [("Left", _LMA)]
-    assert select_hand(hands, "left", mirror=False) is None  # only Left present
+    assert select_hand(hands, "right", mirror=False) is None  # "Left" present -> user's right hand absent
     assert select_hand([], "left", mirror=False) is None
 ```
 

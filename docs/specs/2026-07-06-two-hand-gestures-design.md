@@ -215,6 +215,16 @@ Screen distance is untouched during a grab (the one-handed drag owns depth).
   inference path.
 - **Two-hand rotation** — angle between the two pinch points → screen yaw/roll,
   a natural add on top of the existing grab snapshot.
+- **Downscaled grayscale inference** — run MediaPipe on lower-resolution
+  (downsampled) grayscale frames to cut per-inference cost. Directly targets the
+  2× inference-cost risk of dual-camera tracking: hand landmarks are robust to
+  moderate downscaling, so halving each dimension (~4× fewer pixels) could
+  roughly restore single-camera compute while keeping both hands. Levers to
+  explore: downscale in the C++ sender (less socket payload too) vs. in the
+  sidecar; find the resolution floor where pinch/pose classification still
+  holds; possibly downscale only for detection and keep full-res for the
+  landmark refinement. Pairs with, or is an alternative to, the single-frame
+  `num_hands=2` fallback in "Error handling / risks".
 
 ## Files touched
 
