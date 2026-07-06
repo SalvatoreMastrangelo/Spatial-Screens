@@ -13,6 +13,7 @@
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <vector>
 
 extern char** environ;
 
@@ -39,7 +40,7 @@ double now_s() {
 } // namespace
 
 bool GestureClient::start(const std::string& socket_path, const std::string& script_path,
-                           double connect_timeout_s) {
+                           double connect_timeout_s, bool fusion) {
     std::lock_guard<std::mutex> lock(mutex_);
     unlink(socket_path.c_str());
 
@@ -59,14 +60,15 @@ bool GestureClient::start(const std::string& socket_path, const std::string& scr
         return false;
     }
 
-    char* argv[] = {
+    std::vector<char*> argv = {
         const_cast<char*>("python3"),
         const_cast<char*>(script_path.c_str()),
         const_cast<char*>("--socket"),
         const_cast<char*>(socket_path.c_str()),
-        nullptr,
     };
-    int rc = posix_spawnp(&child_pid_, "python3", nullptr, nullptr, argv, environ);
+    if (fusion) argv.push_back(const_cast<char*>("--fusion"));
+    argv.push_back(nullptr);
+    int rc = posix_spawnp(&child_pid_, "python3", nullptr, nullptr, argv.data(), environ);
     if (rc != 0) {
         fprintf(stderr, "gestures: failed to spawn sidecar (%s) — gesture control disabled\n",
                 strerror(rc));

@@ -36,7 +36,7 @@ public:
     // Returns false (and logs why) on any failure; the object stays safely
     // usable in the disabled state either way.
     bool start(const std::string& socket_path, const std::string& script_path,
-               double connect_timeout_s = 5.0);
+               double connect_timeout_s = 5.0, bool fusion = false);
 
     // Rate-limited to GESTURE_INFER_HZ; safe to call every render frame.
     // `left` and `right` must each be width*height bytes (GRAY8), one byte per

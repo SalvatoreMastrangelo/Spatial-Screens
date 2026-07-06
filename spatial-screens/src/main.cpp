@@ -276,9 +276,11 @@ int main(int argc, char** argv) {
     load_state(app_state);
     if (app_state.distance > 0) o.distance = app_state.distance;
     if (app_state.size > 0) o.size = app_state.size;
+    bool fusion = false;
     for (int i = 1; i < argc; i++) {
         const char* a = argv[i];
         bool ok = false;
+        if (!strcmp(a, "--fusion")) { fusion = true; continue; }
         if (!strncmp(a, "--", 2)) {
             a += 2;
             if (!strcmp(a, "config")) { i++; ok = true; }  // handled in the pre-pass
@@ -572,7 +574,7 @@ int main(int argc, char** argv) {
     xr_device_provider_get_glasses_version(g_provider, fw, &fwlen);
 
     std::string gesture_socket = "/tmp/spatial-screens-gestures-" + std::to_string(getpid()) + ".sock";
-    g_gestures.start(gesture_socket, executable_dir() + "/gestures/hand_tracker.py");
+    g_gestures.start(gesture_socket, executable_dir() + "/gestures/hand_tracker.py", 5.0, fusion);
     tele.log("info", g_gestures.enabled() ? "gesture sidecar connected"
                                           : "gesture sidecar unavailable");
 
