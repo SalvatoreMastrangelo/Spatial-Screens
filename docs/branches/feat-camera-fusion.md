@@ -72,10 +72,33 @@ this was surfaced) and the stereo-3d renderer.
       (8 tasks, TDD). NOTE: `stereo.py` renamed `depth_fusion.py` in the plan to
       avoid clashing with the C++ `src/stereo.h` (SBS rendering); `landmarks_z`
       wire field deferred (per-hand `depth` only in v1).
-- [ ] Implementation (TDD): `depth_fusion.py` → `hand_tracker.py` threading +
-      drain + match → wire schema → C++ parse → `--fusion` plumbing →
-      HUD/telemetry → dashboard.
-- [ ] Hardware verification pass (both-hands fps + depth monotonicity).
+- [x] Implementation — **all 8 tasks done, subagent-driven (implementer +
+      spec/quality review per task), every unit test green.** Commits
+      `49317bc`(depth_fusion.py) `6a8edcf`(wire depth) `e08520e`(C++ parse)
+      `9b80875`(pure helpers) `1eb5b28`(dual-inference + drain) `97bd8b2`(--fusion
+      plumbing) `3200bf8`(telemetry + HUD dot) `36f4f38`(dashboard). SDD ledger:
+      `.superpowers/sdd/progress.md`.
+- [x] Final whole-branch review (opus) — **READY TO MERGE (code)**, no Critical;
+      5 Minors all triaged DEFER (verified safe); 2 Importants were conscious
+      scope decisions, both resolved by the default-on flip below.
+- [x] **DEFAULT FLIPPED TO FUSION-ON** (`ab5f750`) at user request, to stress the
+      strategy-B edge cases on-glasses before deciding opt-in-vs-default. Escape
+      hatch: **`--no-fusion`** falls back to the known-good single-inference path
+      (use it if the 2×-inference send-deadline stall disables gestures
+      mid-session). `--fusion` still force-enables (now redundant). **Final
+      default (keep on vs revert to opt-in) is DEFERRED to after the hardware
+      pass.** Design/plan docs still describe the original opt-in framing — update
+      them once the default is decided.
+- [ ] **Hardware verification pass — THE go/no-go.** Launch default `./run.sh`
+      (now fusion-ON). Confirm: (1) depth monotonic near/far on the dashboard +
+      HUD dot shrinks with distance; (2) **fps holds with BOTH hands present**
+      (the exact case that stalled the first dual-camera build — the drain bounds
+      backlog, NOT per-cycle inference time, so this is the real risk); (3)
+      `--no-fusion` cleanly restores today's single-inference behavior. If (2)
+      fails, the documented fallback is "send off the render mutex" (design
+      §Real-time strategy).
+- [ ] Decide final default (keep fusion-on vs revert to opt-in) + update
+      design/plan/roadmap wording; then merge to `main`.
 
 ## Files (planned — see design §Files touched)
 
