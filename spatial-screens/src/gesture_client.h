@@ -12,13 +12,29 @@
 // Optional feature: if the sidecar can't be started, GestureClient reports
 // enabled() == false and poll() always returns a default (not-present)
 // event. Callers must not treat gestures as a dependency.
-struct GestureEvent {
+// One hand's classified state from the Python/MediaPipe sidecar.
+struct HandState {
     bool present = false;
     bool pinching = false;   // pinch_norm < PINCH_THRESHOLD
     float pinch_x = 0.f, pinch_y = 0.f; // normalized [0,1] pinch midpoint
     std::string pose;        // "open_palm" | "fist" | "point" | "none" | ""
     float landmarks[21][2] = {}; // MediaPipe hand, normalized [0,1] image coords (x-right, y-down); thumb tip = [4], index tip = [8]
     bool has_landmarks = false;  // true iff a full 21-point array parsed
+};
+
+// Both hands from one event. See gestures/protocol.py encode_event.
+struct GestureEvent {
+    HandState left, right;
+    // Legacy single-hand view (primary = left if present, else right), a copy
+    // of the primary hand's fields so the existing single-hand render-loop /
+    // overlay code in main.cpp compiles and runs unchanged during the two-hand
+    // migration. Removed in Task 9 once main.cpp reads left/right directly.
+    bool present = false;
+    bool pinching = false;
+    float pinch_x = 0.f, pinch_y = 0.f;
+    std::string pose;
+    float landmarks[21][2] = {};
+    bool has_landmarks = false;
 };
 
 class GestureClient {

@@ -85,16 +85,45 @@ bool json_find_landmarks(const std::string& s, float out[21][2]) {
     return true;
 }
 
+// Extract the "{...}" body of a hand sub-object ("left"/"right") — its contents
+// contain no nested '{' (values are bools/numbers/strings/arrays), so the first
+// '}' after the opening brace closes it. Returns "" if the key is absent.
+std::string hand_object(const std::string& s, const char* key) {
+    std::string pat = std::string("\"") + key + "\":{";
+    auto pos = s.find(pat);
+    if (pos == std::string::npos) return std::string();
+    pos += pat.size();
+    auto end = s.find('}', pos);
+    if (end == std::string::npos) return std::string();
+    return s.substr(pos, end - pos);
+}
+
+HandState parse_hand(const std::string& obj) {
+    HandState h;
+    json_find_bool(obj, "present", h.present);
+    float pinch_norm = 999.f;
+    json_find_number(obj, "pinch_norm", pinch_norm);
+    h.pinching = h.present && pinch_norm < PINCH_THRESHOLD;
+    json_find_pair(obj, "pinch_pos", h.pinch_x, h.pinch_y);
+    json_find_string(obj, "pose", h.pose);
+    h.has_landmarks = json_find_landmarks(obj, h.landmarks);
+    return h;
+}
+
 } // namespace
 
 GestureEvent parse_event(const std::string& line) {
     GestureEvent ev;
-    json_find_bool(line, "present", ev.present);
-    float pinch_norm = 999.f;
-    json_find_number(line, "pinch_norm", pinch_norm);
-    ev.pinching = ev.present && pinch_norm < PINCH_THRESHOLD;
-    json_find_pair(line, "pinch_pos", ev.pinch_x, ev.pinch_y);
-    json_find_string(line, "pose", ev.pose);
-    ev.has_landmarks = json_find_landmarks(line, ev.landmarks);
+    ev.left = parse_hand(hand_object(line, "left"));
+    ev.right = parse_hand(hand_object(line, "right"));
+    // Populate the legacy primary-hand view (left if present, else right).
+    const HandState& primary = ev.left.present ? ev.left : ev.right;
+    ev.present = primary.present;
+    ev.pinching = primary.pinching;
+    ev.pinch_x = primary.pinch_x;
+    ev.pinch_y = primary.pinch_y;
+    ev.pose = primary.pose;
+    ev.has_landmarks = primary.has_landmarks;
+    memcpy(ev.landmarks, primary.landmarks, sizeof(ev.landmarks));
     return ev;
 }
