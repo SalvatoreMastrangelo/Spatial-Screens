@@ -49,6 +49,7 @@
 #include "vk_renderer.h"
 #include "vk_surface.h"
 #include "gesture_client.h"
+#include "gesture_manip.h"
 #include "capture.h"
 #include "capture_portal.h"
 #include "config.h"
@@ -204,6 +205,9 @@ static std::atomic<int> g_cam_w{0};  // tracking-camera frame size, for hand-ove
 static std::atomic<int> g_cam_h{0};
 static constexpr float PINCH_DISTANCE_SENSITIVITY = 4.0f; // tune after hands-on test; higher = faster response to hand motion
 static constexpr double FIST_HOLD_SECONDS = 0.5;          // how long a fist must be held before it triggers recenter
+static constexpr float GRAB_REPOSITION_GAIN = 1.5f; // image-fraction -> world-fraction; tune on hardware
+static constexpr float GRAB_DIAG_MIN = 20.f;        // inches
+static constexpr float GRAB_DIAG_MAX = 200.f;       // inches
 
 static void on_imu_noop(float*, double) {}
 static void on_pose_noop(float*, double) {}
@@ -611,11 +615,14 @@ int main(int argc, char** argv) {
     Quat win_q0;
     float win_max_ang = 0;
     int win_n = 0;
-    bool was_pinching = false;
-    float pinch_prev_y = 0;
-    double fist_start_s = -1; // -1 = not currently holding a fist
-    bool fist_triggered = false;
-    bool gestures_armed = false; // actions gated: armed by an open palm, disarmed after each gesture
+    // Per-hand arming + single-hand drag state (index 0 = left, 1 = right).
+    bool armed[2] = {false, false};
+    bool was_pinching[2] = {false, false};
+    float pinch_prev_y[2] = {0.f, 0.f};
+    double fist_start_s[2] = {-1.0, -1.0};
+    bool fist_triggered[2] = {false, false};
+    // Two-hand grab (resize + reposition).
+    GrabState grab;
 
     printf("running — hotkeys work globally with Ctrl+Alt: R recenter (Shift adds "
            "VIO reset), [ ] distance, - = size, Q quit\n"
@@ -674,63 +681,89 @@ int main(int argc, char** argv) {
             recenter_at = -1;
         }
 
-        // ---- gestures
-        // Fist-hold takes priority and is mutually exclusive with pinch-drag:
-        // the two pose classifiers run independently in the Python sidecar off
-        // the same landmarks, so a single frame could in principle satisfy both.
-        // When a fist is held, this frame is treated as "not pinching" (rather
-        // than skipping the else via an added && condition) so that pinch state
-        // resets cleanly — if pinch-drag resumes later, its first frame back
-        // only seeds pinch_prev_y instead of computing a delta against stale
-        // pre-fist coordinates.
+        // ---- gestures (two hands)
+        // Per-hand arming: each open palm arms its own hand. A single-hand
+        // gesture needs that hand armed; the two-hand grab needs both. Each
+        // completed gesture disarms the hand(s) it used. See
+        // docs/specs/2026-07-06-two-hand-gestures-design.md.
         GestureEvent gev = g_gestures.poll();
+        HandState* hands[2] = { &gev.left, &gev.right };
+        for (int i = 0; i < 2; i++) {
+            if (!hands[i]->present) armed[i] = false;      // hand gone -> re-arm
+            if (hands[i]->pose == "open_palm") armed[i] = true;
+        }
 
-        // Deliberate-intent gate: gesture ACTIONS (pinch-drag distance,
-        // fist-hold recenter) fire only while "armed", and arming requires a
-        // fully open hand. Each completed gesture disarms again, so a hand
-        // merely passing through the tracking camera — or a stray pinch — does
-        // nothing until you re-open your hand. The pinch-status dot shows the
-        // state: grey (no hand), amber (hand seen, not armed), blue (armed),
-        // green (armed + pinching).
-        if (!gev.present) gestures_armed = false;      // hand gone -> re-arm needed
-        if (gev.pose == "open_palm") gestures_armed = true;
+        bool grab_now = gev.left.present && gev.right.present &&
+                        armed[0] && armed[1] &&
+                        gev.left.pinching && gev.right.pinching;
 
-        if (gestures_armed && gev.pose == "fist") {
-            if (fist_start_s < 0) { fist_start_s = now_s(); fist_triggered = false; }
-            else if (!fist_triggered && now_s() - fist_start_s > FIST_HOLD_SECONDS) {
-                ori_offset = yaw_twist(head_q);
-                place_screen();
-                printf("gesture recenter (fist-hold)\n");
-                tele.log("info", "recentered");
-                fist_triggered = true;
-                gestures_armed = false;                // one gesture per open-hand arm
+        if (grab_now) {
+            if (!grab.active) {
+                Vec3 r = qrot(anchor_q, { 1, 0, 0 });
+                Vec3 u = qrot(anchor_q, { 0, 1, 0 });
+                grab = grab_begin(gev.left.pinch_x, gev.left.pinch_y,
+                                  gev.right.pinch_x, gev.right.pinch_y,
+                                  diag_in, { anchor_p.x, anchor_p.y, anchor_p.z },
+                                  { r.x, r.y, r.z }, { u.x, u.y, u.z });
+            } else {
+                GrabResult gr = grab_update(grab, gev.left.pinch_x, gev.left.pinch_y,
+                                            gev.right.pinch_x, gev.right.pinch_y,
+                                            distance, GRAB_REPOSITION_GAIN,
+                                            GRAB_DIAG_MIN, GRAB_DIAG_MAX);
+                diag_in = gr.diag;
+                anchor_p = { gr.anchor.x, gr.anchor.y, gr.anchor.z };
             }
-            was_pinching = false;
-        } else if (gestures_armed && gev.pinching) {
-            fist_start_s = -1;
-            fist_triggered = false;
-            if (was_pinching) {
-                float dy = gev.pinch_y - pinch_prev_y; // image space: +y down
-                float old_distance = distance;
-                distance = std::clamp(distance - dy * PINCH_DISTANCE_SENSITIVITY, 0.5f, 10.f);
-                // Slide the anchor along its existing fixed forward axis rather
-                // than calling place_screen() (which would re-derive anchor_q/p
-                // from the live head pose and re-center every frame). anchor_q
-                // stays exactly as set by the last real placement.
-                Vec3 fwd = qrot(anchor_q, { 0, 0, -1 });
-                float ddist = distance - old_distance;
-                anchor_p.x += fwd.x * ddist;
-                anchor_p.y += fwd.y * ddist;
-                anchor_p.z += fwd.z * ddist;
+            // Suppress single-hand logic and reset its per-hand run-state so it
+            // re-seeds cleanly if a hand later acts alone.
+            for (int i = 0; i < 2; i++) {
+                was_pinching[i] = false;
+                fist_start_s[i] = -1;
+                fist_triggered[i] = false;
             }
-            pinch_prev_y = gev.pinch_y;
-            was_pinching = true;
         } else {
-            fist_start_s = -1;
-            fist_triggered = false;
-            // A pinch-drag that just ended is one completed gesture -> disarm.
-            if (was_pinching) gestures_armed = false;
-            was_pinching = false;
+            if (grab.active) {
+                grab.active = false;   // grab ended -> both hands must re-arm
+                armed[0] = armed[1] = false;
+            }
+            // Single-hand gestures on the first qualifying armed hand
+            // (fist-hold recenter takes priority over pinch-drag distance).
+            for (int i = 0; i < 2; i++) {
+                HandState& h = *hands[i];
+                if (armed[i] && h.pose == "fist") {
+                    if (fist_start_s[i] < 0) { fist_start_s[i] = now_s(); fist_triggered[i] = false; }
+                    else if (!fist_triggered[i] && now_s() - fist_start_s[i] > FIST_HOLD_SECONDS) {
+                        ori_offset = yaw_twist(head_q);
+                        place_screen();
+                        printf("gesture recenter (fist-hold)\n");
+                        tele.log("info", "recentered");
+                        fist_triggered[i] = true;
+                        armed[i] = false;      // one gesture per open-hand arm
+                    }
+                    was_pinching[i] = false;
+                    break;                     // this hand owns the gesture this frame
+                } else if (armed[i] && h.pinching) {
+                    fist_start_s[i] = -1;
+                    fist_triggered[i] = false;
+                    if (was_pinching[i]) {
+                        float dy = h.pinch_y - pinch_prev_y[i]; // image space: +y down
+                        float old_distance = distance;
+                        distance = std::clamp(distance - dy * PINCH_DISTANCE_SENSITIVITY, 0.5f, 10.f);
+                        Vec3 fwd = qrot(anchor_q, { 0, 0, -1 });
+                        float ddist = distance - old_distance;
+                        anchor_p.x += fwd.x * ddist;
+                        anchor_p.y += fwd.y * ddist;
+                        anchor_p.z += fwd.z * ddist;
+                    }
+                    pinch_prev_y[i] = h.pinch_y;
+                    was_pinching[i] = true;
+                    break;
+                } else {
+                    fist_start_s[i] = -1;
+                    fist_triggered[i] = false;
+                    if (was_pinching[i]) armed[i] = false; // completed pinch-drag -> disarm
+                    was_pinching[i] = false;
+                }
+            }
         }
 
         // ---- pose (predicted, then smoothed)
@@ -909,6 +942,12 @@ int main(int argc, char** argv) {
             // fingertip highlight must use the same green (design: the two
             // feedback channels agree).
             const float status_green[4] = { 0.20f, 0.90f, 0.30f, 1.f };
+
+            // TEMPORARY bridge: the status-dot and overlay blocks below still
+            // read the old single-hand `gestures_armed`. Task 9 rewrites both to
+            // per-hand `armed[i]` and removes this line. armed[] holds this
+            // frame's final arming state (set by the gesture block above).
+            bool gestures_armed = armed[0] || armed[1];
 
             // Pinch/arm-status dot, just left of the VO tracking-status dot (at
             // x-factor 0.95). Only shown while the gesture pipeline is live (a
