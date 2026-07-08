@@ -55,3 +55,14 @@ def test_drain_to_latest_single_when_not_readable():
 
 def test_drain_to_latest_eof_returns_none():
     assert drain_to_latest(lambda: None, lambda: False) is None
+
+
+def test_build_argparser_defaults_and_flags():
+    from hand_tracker import build_argparser  # new: factor argparse out of main()
+    p = build_argparser()
+    a = p.parse_args(["--socket", "/tmp/s.sock"])
+    assert a.enhance == "gamma_clahe" and a.enhance_gamma == 0.45
+    assert a.enhance_clahe_clip == 3.0 and a.both_cam is True
+    b = p.parse_args(["--socket", "/tmp/s.sock", "--no-both-cam",
+                      "--enhance", "clahe", "--enhance-gamma", "0.6"])
+    assert b.both_cam is False and b.enhance == "clahe" and b.enhance_gamma == 0.6

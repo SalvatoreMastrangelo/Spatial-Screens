@@ -11,13 +11,14 @@ Standalone testing: python3 hand_tracker.py --socket /tmp/test.sock --echo
 import argparse
 import os
 import socket
-import statistics
 import sys
 import time
 import urllib.request
 
 from protocol import encode_event, read_frame
 from depth_fusion import robust_depth
+from enhance import make_enhancer
+from fuse_hands import nominal_disparity, fuse_and_assign, match_right_hand
 
 FORMAT_GRAY8 = 0
 
@@ -86,26 +87,6 @@ def make_reader(sock):
 
 def _no_hand_event(timestamp):
     return encode_event(timestamp, None, None)
-
-
-def match_right_hand(left_lm, right_hands, max_row_delta=0.15):
-    """Given the authoritative LEFT-image hand landmarks and the RIGHT-image
-    detections [(handedness, landmarks), ...], return the right-image landmarks
-    of the SAME physical hand, or None.
-
-    Under a nominally-rectified horizontal stereo pair, corresponding landmarks
-    share ~the same image row (y) and the right-image x is < the left-image x
-    (positive disparity). Pick the right hand with the smallest mean |dy| that
-    also has positive mean disparity, within max_row_delta."""
-    best, best_dy = None, max_row_delta
-    for _label, rlm in right_hands:
-        dy = statistics.mean(abs(l[1] - r[1]) for l, r in zip(left_lm, rlm))
-        disp = statistics.mean(l[0] - r[0] for l, r in zip(left_lm, rlm))
-        if disp <= 0:
-            continue
-        if dy < best_dy:
-            best, best_dy = rlm, dy
-    return best
 
 
 def fuse_depths(user_hands, right_hands):
@@ -194,14 +175,21 @@ def build_landmarker():
     )
 
 
-def run_inference(sock, read_exact, landmarker, landmarker_r=None, fusion=False):
+def run_inference(sock, read_exact, landmarker, landmarker_r=None, fusion=False, both_cam=True, make_enh=None):
     import select as _select
     from concurrent.futures import ThreadPoolExecutor
 
     import cv2
     import mediapipe as mp
     import numpy as np
-    from classify import classify_pose, pinch_norm, pinch_pos, select_hand
+    from classify import MIRROR_HANDEDNESS, classify_pose, pinch_norm, pinch_pos, select_hand
+
+    # One enhancer PER inference thread: cv2.CLAHE is stateful and not reentrant,
+    # and the fusion path runs the left/right infer() concurrently. make_enh() is
+    # a factory that returns a fresh enhancer (fresh CLAHE) on each call.
+    make_enh = make_enh or (lambda: (lambda g: g))
+    enh_l = make_enh()
+    d0 = nominal_disparity()
 
     def hand_dict(lm, handedness, depth=None):
         return {
@@ -214,8 +202,9 @@ def run_inference(sock, read_exact, landmarker, landmarker_r=None, fusion=False)
             "depth": depth,
         }
 
-    def infer(landmarker_obj, plane, width, height, ts):
+    def infer(landmarker_obj, plane, width, height, ts, enh):
         gray = np.frombuffer(plane, dtype=np.uint8).reshape(height, width)
+        gray = enh(gray)                           # brightening pre-pass (per-thread enhancer)
         rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         result = landmarker_obj.detect_for_video(mp_image, ts)
@@ -227,6 +216,7 @@ def run_inference(sock, read_exact, landmarker, landmarker_r=None, fusion=False)
 
     do_fusion = fusion and landmarker_r is not None
     pool = ThreadPoolExecutor(max_workers=2) if do_fusion else None
+    enh_r = make_enh() if do_fusion else None   # separate CLAHE for the right-plane thread
     last_ts_l = last_ts_r = -1
     while True:
         frame = drain_to_latest(lambda: read_frame(read_exact), readable)
@@ -245,8 +235,8 @@ def run_inference(sock, read_exact, landmarker, landmarker_r=None, fusion=False)
         if stereo:
             ts_r = max(int(timestamp * 1000), last_ts_r + 1)
             last_ts_r = ts_r
-            fut_r = pool.submit(infer, landmarker_r, planes[1], width, height, ts_r)
-            hands = infer(landmarker, planes[0], width, height, ts_l)
+            fut_r = pool.submit(infer, landmarker_r, planes[1], width, height, ts_r, enh_r)
+            hands = infer(landmarker, planes[0], width, height, ts_l, enh_l)
             try:
                 right_hands = fut_r.result()
             except Exception as e:  # right inference is best-effort; never kill gestures
@@ -254,26 +244,46 @@ def run_inference(sock, read_exact, landmarker, landmarker_r=None, fusion=False)
                       f"this frame", file=sys.stderr)
                 right_hands, stereo = None, False
         else:
-            hands = infer(landmarker, planes[0], width, height, ts_l)
+            hands = infer(landmarker, planes[0], width, height, ts_l, enh_l)
             right_hands = None
 
-        left_lm = select_hand(hands, "left")
-        right_lm = select_hand(hands, "right")
-        depths = (fuse_depths({"left": left_lm, "right": right_lm}, right_hands)
-                  if stereo else {"left": None, "right": None})
-        left = hand_dict(left_lm, "left", depths["left"]) if left_lm is not None else None
-        right = hand_dict(right_lm, "right", depths["right"]) if right_lm is not None else None
+        if stereo and both_cam:
+            left_f, right_f = fuse_and_assign(hands, right_hands, d0, MIRROR_HANDEDNESS)
+            left = (hand_dict(left_f["landmarks"], "left", left_f["depth"])
+                    if left_f is not None else None)
+            right = (hand_dict(right_f["landmarks"], "right", right_f["depth"])
+                     if right_f is not None else None)
+        else:
+            left_lm = select_hand(hands, "left")
+            right_lm = select_hand(hands, "right")
+            depths = (fuse_depths({"left": left_lm, "right": right_lm}, right_hands)
+                      if stereo else {"left": None, "right": None})
+            left = (hand_dict(left_lm, "left", depths["left"])
+                    if left_lm is not None else None)
+            right = (hand_dict(right_lm, "right", depths["right"])
+                     if right_lm is not None else None)
         sock.sendall(encode_event(timestamp, left, right))
 
 
-def main():
+def build_argparser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--socket", required=True)
     parser.add_argument("--echo", action="store_true",
                         help="skip MediaPipe; just acknowledge frames (IPC smoke test)")
     parser.add_argument("--fusion", action="store_true",
                         help="enable stereo depth fusion (2nd inference on the right plane)")
-    args = parser.parse_args()
+    parser.add_argument("--no-both-cam", dest="both_cam", action="store_false",
+                        help="disable both-camera tracking union (fusion only feeds depth)")
+    parser.add_argument("--enhance", default="gamma_clahe",
+                        choices=["none", "gamma", "clahe", "gamma_clahe"])
+    parser.add_argument("--enhance-gamma", type=float, default=0.45)
+    parser.add_argument("--enhance-clahe-clip", type=float, default=3.0)
+    parser.set_defaults(both_cam=True)
+    return parser
+
+
+def main():
+    args = build_argparser().parse_args()
 
     # Build the (slow-to-import/load) landmarker(s) before connecting — see
     # build_landmarker()'s docstring for why ordering matters.
@@ -286,7 +296,8 @@ def main():
     if args.echo:
         run_echo(sock, read_exact)
     else:
-        run_inference(sock, read_exact, landmarker, landmarker_r, args.fusion)
+        run_inference(sock, read_exact, landmarker, landmarker_r, args.fusion, args.both_cam,
+                      lambda: make_enhancer(args.enhance, args.enhance_gamma, args.enhance_clahe_clip))
 
 
 if __name__ == "__main__":

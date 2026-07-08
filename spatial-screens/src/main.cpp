@@ -41,6 +41,7 @@
 #include <csignal>
 #include <execinfo.h>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <dirent.h>
 #include <string>
@@ -277,11 +278,18 @@ int main(int argc, char** argv) {
     if (app_state.distance > 0) o.distance = app_state.distance;
     if (app_state.size > 0) o.size = app_state.size;
     bool fusion = true;
+    bool both_cam = true;
+    std::string gesture_enhance = "gamma_clahe";
+    float gesture_enhance_gamma = 0.45f, gesture_enhance_clahe_clip = 3.0f;
     for (int i = 1; i < argc; i++) {
         const char* a = argv[i];
         bool ok = false;
         if (!strcmp(a, "--fusion")) { fusion = true; continue; }
         if (!strcmp(a, "--no-fusion")) { fusion = false; continue; }
+        if (!strcmp(a, "--no-both-cam")) { both_cam = false; continue; }
+        if (!strcmp(a, "--enhance") && i + 1 < argc) { gesture_enhance = argv[++i]; continue; }
+        if (!strcmp(a, "--enhance-gamma") && i + 1 < argc) { gesture_enhance_gamma = atof(argv[++i]); continue; }
+        if (!strcmp(a, "--enhance-clahe-clip") && i + 1 < argc) { gesture_enhance_clahe_clip = atof(argv[++i]); continue; }
         if (!strncmp(a, "--", 2)) {
             a += 2;
             if (!strcmp(a, "config")) { i++; ok = true; }  // handled in the pre-pass
@@ -295,9 +303,12 @@ int main(int argc, char** argv) {
                    "[--capture-backend auto|portal|xshm|test] [--capture-hz N] [--distance M] "
                    "[--size IN] [--pitch-trim DEG] [--predict-ms MS] [--smooth-pos 0..1] "
                    "[--smooth-ori 0..1] [--ws-port N] [--window] [--config PATH] "
-                   "[--dump-config] [--probe-camera] [--no-fusion] [--fusion]\n"
+                   "[--dump-config] [--probe-camera] [--no-fusion] [--fusion] "
+                   "[--no-both-cam] [--enhance MODE] [--enhance-gamma F] [--enhance-clahe-clip F]\n"
                    "  --no-fusion   disable stereo depth fusion (fusion is ON by default)\n"
                    "  --fusion      force-enable stereo depth fusion (default)\n"
+                   "  --no-both-cam disable both-camera tracking union (fusion feeds depth only)\n"
+                   "  --enhance     hand-frame brightening: none|gamma|clahe|gamma_clahe (default gamma_clahe)\n"
                    "config: %s   state: %s\n",
                    argv[0], config_default_path().c_str(), state_file_path().c_str());
             return 0;
@@ -577,7 +588,9 @@ int main(int argc, char** argv) {
     xr_device_provider_get_glasses_version(g_provider, fw, &fwlen);
 
     std::string gesture_socket = "/tmp/spatial-screens-gestures-" + std::to_string(getpid()) + ".sock";
-    g_gestures.start(gesture_socket, executable_dir() + "/gestures/hand_tracker.py", 5.0, fusion);
+    g_gestures.start(gesture_socket, executable_dir() + "/gestures/hand_tracker.py",
+                     5.0, fusion, both_cam, gesture_enhance,
+                     gesture_enhance_gamma, gesture_enhance_clahe_clip);
     tele.log("info", g_gestures.enabled() ? "gesture sidecar connected"
                                           : "gesture sidecar unavailable");
 

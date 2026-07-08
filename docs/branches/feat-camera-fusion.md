@@ -100,6 +100,91 @@ this was surfaced) and the stereo-3d renderer.
 - [ ] Decide final default (keep fusion-on vs revert to opt-in) + update
       design/plan/roadmap wording; then merge to `main`.
 
+## Hardware session 2026-07-08 — depth ✓ (single hand); NEW blocker surfaced
+
+Launched the fusion hardware pass. Results:
+
+**Fusion depth WORKS end-to-end** (single hand), measured non-invasively by
+sniffing the WS telemetry on :8765 (`{"type":"hands",...,"left_depth","right_depth"}`,
+`-1.0` = no-depth sentinel). Real depth flowed on 244/244 frames and varied smoothly
+0.13–0.18 m as the hand moved near/far — impossible from one camera, so
+`planes[1]`=`image_right0` is genuinely real+distinct and triangulation is live.
+Absolute depth is ~3× compressed (hand at ~40 cm read ~0.14 m): expected from the
+assumed 6 cm baseline / 70° FOV; relative near/far is correct.
+**NOT yet tested: the both-hands-present fps go/no-go** (the 2×-inference stall) —
+the session diverted into the ergonomics issue below before running it. That test
+STILL gates the merge.
+
+**NEW blocker — tracking forces an off-center (left) hand position.** User: "I have
+to offset my hands to the left; I want them centered wrt my face." Investigated on
+hardware via a temporary `HANDTRACK_DUMP` probe in `hand_tracker.py` (dumped both
+planes as PNG + logged per-camera detection counts/wrist-x; **since reverted**,
+git-clean). Findings:
+- Gesture tracking uses `planes[0]` (LEFT camera) ONLY for landmarks; the right
+  camera feeds depth only. Coverage is biased to the left camera's FOV → the offset.
+- The tracking cameras are wide FISHEYE aimed DOWN (~35° pitch); the room was very
+  dark → MediaPipe only detects in the low, lamp-lit zone. Saved raw frames confirm:
+  top-of-frame = ceiling, hands live low near the desk.
+- Measured (telemetry present-flag, hand held still): CENTERED at nose = **0%**
+  detected (136 frames); same hand at the user's LEFT-offset = **87%** detected +
+  85% depth. Vertical sweep nose→belly: detection switches ON as the hand lowers
+  into the lit zone; at belly BOTH cameras track (clean stereo pair, wristx
+  L≈0.26 / R≈0.27).
+- Root cause of "offset left": left-camera-only tracking + that camera's leftward
+  FOV. Darkness is a strong secondary factor.
+
+**User goal (decided):** center hands L-R at a comfortable/**flexible height** with
+a forgiving zone — NOT insisting on face height. Don't fight the downward angle.
+
+**Direction C probe — DONE 2026-07-08 (autonomous; user away, hardware connected).**
+Temporarily dumped all 4 planes from `on_camera_carina` (`--probe-camera`; edit
+reverted, git-clean, clean rebuild done). RESULTS:
+- **`image_left1` / `image_right1` are NULL every frame** — the SDK does NOT deliver
+  a 2nd image pair on this device. No brighter hardware exposure exists; brightening
+  must be done in SOFTWARE.
+- Raw planes (640×480 GRAY8, no hand needed) are **brutally underexposed**: left0
+  mean **12/255** (57% of px <10, 96% <30); right0 mean 10.6. The pair is distinct
+  (mean|Δ|=7.9 → real stereo, not a duplicate buffer — re-confirms depth is legit).
+- The darkness is **recoverable**: gamma-0.45 lifts mean 12→59 (0% left <30);
+  gamma+CLAHE → mean 66 and the whole room resolves from near-black. So software
+  brightening is viable and should expand the detectable zone into the dark regions.
+
+### Design APPROVED + IMPLEMENTED 2026-07-08/09 (Tasks 1–4; Task 5 = hardware, pending)
+Spec `docs/specs/2026-07-08-centered-hand-tracking-design.md`, plan
+`…-centered-hand-tracking-plan.md`. User approved (both parts, gamma_clahe default,
+union on-with-fusion, v1 nominal-disparity). Built subagent-driven, **UNCOMMITTED**
+(user asked to review first): new `gestures/enhance.py` + `gestures/fuse_hands.py`
+(+ tests), `hand_tracker.py` wired (per-thread enhancer — final-review fix), C++
+forwards `--enhance`/`--no-both-cam`. `pytest tests/` = 48 pass; `make` links clean.
+Final opus review: 1 Important fixed (shared CLAHE across the 2 fusion threads →
+per-thread enhancer), #2 union-doubling = spec-anticipated hardware watch-item (see
+Task 5 Step 4), #3/#4 minor hardening applied. **Next: run the plan's Task 5 on
+glasses** (brightening, horizontal coverage map w/ self-paced protocol, centering,
+two-hand grab, and the still-pending both-hands fps gate). Original incremental
+framing below (superseded by "spec both parts together"):
+
+### Design (approved; specced together) — INCREMENTAL framing (historical)
+1. **Brightening pre-pass FIRST** (simple, validated, low-risk): in the sidecar
+   `infer()`, apply gamma (~0.45) and/or CLAHE (clip~3, 8×8) to the GRAY8 plane
+   before `cvtColor`→MediaPipe; apply to both planes; config-gated + tunable. This
+   alone may largely fix "offset left" by making far more of the frame detectable
+   (not just the lamp-lit spot). Re-test on hardware (needs a hand): how much does
+   the usable zone widen / does centering improve?
+2. **THEN both-camera detection union** ONLY if brightening isn't enough: use the
+   right landmarker's detections (fusion already computes them) to extend horizontal
+   coverage; disambiguate via the stereo depth-match (one 3D hand entity) — the
+   fusion-native cure for the two-hand cross-camera confusion. Higher-risk
+   (gesture-position coordinate continuity across cameras); defer until proven
+   necessary. YAGNI.
+
+Note: the both-hands fps go/no-go for the fusion branch itself is STILL untested and
+still gates merging `feat/camera-fusion` — independent of this centering work.
+
+### Coordination lesson (for hardware tests)
+Blind fixed-window captures failed twice — the user watches the glasses, not the
+terminal, and can't sync to a timed window. Next time use a self-paced protocol
+(user says "now") or a live streaming monitor of the detection log, not timed sweeps.
+
 ## Next session — running the hardware pass (cold-start runbook)
 
 Everything below runs from THIS worktree

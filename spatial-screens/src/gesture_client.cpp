@@ -40,7 +40,9 @@ double now_s() {
 } // namespace
 
 bool GestureClient::start(const std::string& socket_path, const std::string& script_path,
-                           double connect_timeout_s, bool fusion) {
+                           double connect_timeout_s, bool fusion,
+                           bool both_cam, const std::string& enhance,
+                           float enhance_gamma, float enhance_clahe_clip) {
     std::lock_guard<std::mutex> lock(mutex_);
     unlink(socket_path.c_str());
 
@@ -60,13 +62,25 @@ bool GestureClient::start(const std::string& socket_path, const std::string& scr
         return false;
     }
 
+    // Format with an explicit decimal dot: std::to_string honors the C locale, and
+    // a comma-decimal locale would emit "0,45" which Python argparse type=float rejects.
+    char gbuf[32], cbuf[32];
+    snprintf(gbuf, sizeof(gbuf), "%.4f", enhance_gamma);
+    snprintf(cbuf, sizeof(cbuf), "%.4f", enhance_clahe_clip);
     std::vector<char*> argv = {
         const_cast<char*>("python3"),
         const_cast<char*>(script_path.c_str()),
         const_cast<char*>("--socket"),
         const_cast<char*>(socket_path.c_str()),
+        const_cast<char*>("--enhance"),
+        const_cast<char*>(enhance.c_str()),
+        const_cast<char*>("--enhance-gamma"),
+        gbuf,
+        const_cast<char*>("--enhance-clahe-clip"),
+        cbuf,
     };
     if (fusion) argv.push_back(const_cast<char*>("--fusion"));
+    if (fusion && !both_cam) argv.push_back(const_cast<char*>("--no-both-cam"));
     argv.push_back(nullptr);
     int rc = posix_spawnp(&child_pid_, "python3", nullptr, nullptr, argv.data(), environ);
     if (rc != 0) {
