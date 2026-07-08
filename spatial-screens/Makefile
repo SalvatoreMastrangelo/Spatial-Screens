@@ -57,10 +57,18 @@ src/stereo_math_test.o: src/stereo_math_test.cpp src/config.h src/scene.h src/po
 stereo-math-test: src/stereo_math_test.o src/config.o src/scene.o
 	$(CXX) $^ -o $@
 
-test: gesture-parse-test gesture-manip-test stereo-math-test
+src/predict_math_test.o: src/predict_math_test.cpp src/predict_math.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Pure timing/prediction math test — header-only unit, no SDK/Vulkan/X deps.
+predict-math-test: src/predict_math_test.o
+	$(CXX) $^ -o $@
+
+test: gesture-parse-test gesture-manip-test stereo-math-test predict-math-test
 	./gesture-parse-test
 	./gesture-manip-test
 	./stereo-math-test
+	./predict-math-test
 
 src/config.o: src/config.cpp src/config.h src/pose_math.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
@@ -111,6 +119,6 @@ capture-test: src/capture_test.o $(CAPTURE_OBJS) src/vk_surface.o
 run: spatial-screens
 	./run.sh
 clean:
-	rm -f spatial-screens vk-test capture-test gesture-parse-test gesture-manip-test stereo-math-test sbs-spike src/*.o
+	rm -f spatial-screens vk-test capture-test gesture-parse-test gesture-manip-test stereo-math-test predict-math-test sbs-spike src/*.o
 
 .PHONY: run clean test
