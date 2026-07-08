@@ -54,6 +54,22 @@ static void test_config_keys() {
     CHECK(o2.screens.empty());
     CHECK(!set_option(o2, "screen.17.monitor", "x"));
     CHECK(o2.screens.empty());
+
+    // Prediction options (vsync-timed pose prediction).
+    Options p;
+    CHECK(p.predict_mode == "vsync");                 // default: on
+    CHECK(std::fabs(p.scanout_ms - 5.f) < 1e-6f);
+    CHECK(std::fabs(p.predict_cap_ms - 35.f) < 1e-6f);
+    CHECK(set_option(p, "predict-mode", "off"));
+    CHECK(p.predict_mode == "off");
+    CHECK(set_option(p, "scanout-ms", "8"));
+    CHECK(std::fabs(p.scanout_ms - 8.f) < 1e-6f);
+    CHECK(set_option(p, "predict-cap-ms", "25"));
+    CHECK(std::fabs(p.predict_cap_ms - 25.f) < 1e-6f);
+    // predict-ms implies fixed mode (back-compat).
+    CHECK(set_option(p, "predict-ms", "20"));
+    CHECK(std::fabs(p.predict_ms - 20.f) < 1e-6f);
+    CHECK(p.predict_mode == "fixed");
 }
 
 static void test_scene_build() {

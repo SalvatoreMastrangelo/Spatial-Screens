@@ -126,7 +126,10 @@ bool set_option(Options& o, const std::string& k, const std::string& v) {
     else if (k == "distance") parse_float(k, v, o.distance);
     else if (k == "size") parse_float(k, v, o.size);
     else if (k == "pitch-trim") parse_float(k, v, o.pitch_trim);
-    else if (k == "predict-ms") parse_float(k, v, o.predict_ms);
+    else if (k == "predict-ms") { parse_float(k, v, o.predict_ms); o.predict_mode = "fixed"; }
+    else if (k == "predict-mode") o.predict_mode = v;
+    else if (k == "scanout-ms") parse_float(k, v, o.scanout_ms);
+    else if (k == "predict-cap-ms") parse_float(k, v, o.predict_cap_ms);
     else if (k == "smooth-pos") parse_float(k, v, o.smooth_pos);
     else if (k == "smooth-ori") parse_float(k, v, o.smooth_ori);
     else if (k == "window") o.window = parse_bool(v);

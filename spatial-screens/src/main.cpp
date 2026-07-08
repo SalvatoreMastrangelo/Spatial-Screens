@@ -303,7 +303,9 @@ int main(int argc, char** argv) {
         if (!ok) {
             printf("usage: %s [--monitor NAME] [--capture NAME|test] "
                    "[--capture-backend auto|portal|xshm|test] [--capture-hz N] [--distance M] "
-                   "[--size IN] [--pitch-trim DEG] [--predict-ms MS] [--smooth-pos 0..1] "
+                   "[--size IN] [--pitch-trim DEG] [--predict-ms MS] "
+                   "[--predict-mode off|fixed|vsync] [--scanout-ms MS] [--predict-cap-ms MS] "
+                   "[--smooth-pos 0..1] "
                    "[--smooth-ori 0..1] [--ws-port N] [--window] [--config PATH] "
                    "[--dump-config] [--probe-camera] [--no-fusion] [--fusion] "
                    "[--no-both-cam] [--enhance MODE] [--enhance-gamma F] [--enhance-clahe-clip F]\n"
@@ -324,6 +326,8 @@ int main(int argc, char** argv) {
                o.monitor.c_str(), o.capture.c_str(), o.capture_backend.c_str(), o.capture_hz);
         printf("distance = %.3f\nsize = %.1f\npitch-trim = %.2f\npredict-ms = %.2f\n",
                o.distance, o.size, o.pitch_trim, o.predict_ms);
+        printf("predict-mode = %s\nscanout-ms = %.2f\npredict-cap-ms = %.2f\n",
+               o.predict_mode.c_str(), o.scanout_ms, o.predict_cap_ms);
         printf("smooth-pos = %.2f\nsmooth-ori = %.2f\nwindow = %s\nws-port = %d\n",
                o.smooth_pos, o.smooth_ori, o.window ? "true" : "false", o.ws_port);
         printf("stereo = %s\nipd-mm = %.1f\nworkspace = %s\nscreens = %zu configured\n",

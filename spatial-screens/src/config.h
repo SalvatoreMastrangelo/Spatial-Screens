@@ -32,6 +32,9 @@ struct Options {
     float size = 24.f;                    // diagonal inches
     float pitch_trim = 0.f;               // degrees
     float predict_ms = 0.f;
+    std::string predict_mode = "vsync";   // off|fixed|vsync (head-pose prediction)
+    float scanout_ms = 5.f;               // extra sample-to-photon term (vsync mode)
+    float predict_cap_ms = 35.f;          // clamp on the prediction horizon
     float smooth_pos = 0.10f;
     float smooth_ori = 0.40f;
     bool window = false;
