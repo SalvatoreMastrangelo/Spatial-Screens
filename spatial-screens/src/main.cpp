@@ -676,7 +676,9 @@ int main(int argc, char** argv) {
     // Two-hand grab (resize + reposition).
     GrabState grab;
     float grab_scale0 = 1.f;   // rack_size_scale snapshot at grab start (rack mode)
-    Vec3 grab_rel0;            // grabbed anchor's offset in the head-local frame at grab start — grab follows head pose
+    Vec3 grab_rel0;            // grabbed anchor's offset in the head-local frame at grab start
+    Quat grab_ori0;            // active screen's WORLD orientation at grab start
+    Quat grab_head_q0;         // head orientation (recentered frame) at grab start — grab follows head pose
 
     printf("running — hotkeys work globally with Ctrl+Alt: R recenter (Shift adds "
            "VIO reset), [ ] distance, - = size, Q quit\n"
@@ -822,6 +824,7 @@ int main(int argc, char** argv) {
                                       rack_dist_scale, sq, sp);
                     anchor0 = sp;
                     size0 = scene[active_screen].cfg.size;
+                    grab_ori0 = sq;   // weld reference
                 }
                 grab = grab_begin(gev.left.pinch_x, gev.left.pinch_y,
                                   gev.right.pinch_x, gev.right.pinch_y,
@@ -832,6 +835,7 @@ int main(int argc, char** argv) {
                 // frame at grab start, so the grab follows the head pose (look/lean
                 // and the screen comes with you); hand motion nudges it on top.
                 Quat head_rc0 = qmul(qconj(ori_offset), head_q);
+                grab_head_q0 = head_rc0;   // head-delta baseline
                 Vec3 hp0 = qrot(qconj(ori_offset), head_p);
                 Vec3 off0 = { anchor0.x - hp0.x, anchor0.y - hp0.y, anchor0.z - hp0.z };
                 grab_rel0 = qrot(qconj(head_rc0), off0);
@@ -847,7 +851,7 @@ int main(int argc, char** argv) {
                     // head's right/up plane, so the screen follows head motion
                     // (look/lean and it comes with you) while hands fine-tune it.
                     // gr.anchor is unused here; gr.diag (spread) drives size.
-                    // Orientation is held fixed — the screen follows head POSITION,
+                    // Orientation is head-anchored too — the screen follows head POSITION,
                     // not facing. Head-anchoring is gated to the active-screen branch
                     // because the rack origin sits ON the head (d0->0 there).
                     Quat head_rc = qmul(qconj(ori_offset), head_q);
@@ -862,8 +866,10 @@ int main(int argc, char** argv) {
                                  grab_rel0.z };
                     Vec3 rw = qrot(head_rc, rel);
                     Vec3 anchor = { hp.x + rw.x, hp.y + rw.y, hp.z + rw.z };
-                    Vec3 d = { anchor.x - rack_p.x, anchor.y - rack_p.y, anchor.z - rack_p.z };
-                    scene[active_screen].cfg.pose_pos = qrot(qconj(rack_q), d);
+                    Quat world_ori = head_delta_orient(grab_ori0, grab_head_q0, head_rc);
+                    world_to_rack_frame(rack_q, rack_p, world_ori, anchor,
+                                        scene[active_screen].cfg.pose_ori,
+                                        scene[active_screen].cfg.pose_pos);
                     scene[active_screen].cfg.has_pose_override = true;  // already true; explicit
                     scene[active_screen].cfg.size = gr.diag;
                 } else {
