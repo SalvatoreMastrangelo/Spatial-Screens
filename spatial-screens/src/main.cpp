@@ -52,6 +52,7 @@
 #include "viture_device_carina.h"
 #include "vk_renderer.h"
 #include "pose_math.h"
+#include "predict_math.h"
 #include "vk_surface.h"
 #include "gesture_client.h"
 #include "gesture_manip.h"
@@ -109,6 +110,11 @@ static constexpr float SELECT_BORDER_M = 0.003f; // green border thickness (m) �
 
 static void on_imu_noop(float*, double) {}
 static void on_pose_noop(float*, double) {}
+
+static double mono_now_s() {
+    using namespace std::chrono;
+    return duration<double>(steady_clock::now().time_since_epoch()).count();
+}
 
 static void on_camera_carina(char* image_left0, char* image_right0,
                               char* /*image_left1*/, char* /*image_right1*/,
@@ -1026,6 +1032,14 @@ int main(int argc, char** argv) {
         }
 
         // ---- pose (predicted, then smoothed)
+        // Real per-frame sample period for the One-Euro filter (and, later,
+        // prediction). Clamped so a stall or a burst can't destabilize alpha.
+        static double last_pose_now = -1.0;
+        double pose_now = mono_now_s();
+        float dt = (last_pose_now < 0.0)
+                 ? (1.f / 90.f)
+                 : std::clamp(float(pose_now - last_pose_now), 1.f / 240.f, 1.f / 30.f);
+        last_pose_now = pose_now;
         float pose[7] = {0};
         if (get_gl_pose_carina(g_provider, pose, double(predict_ms) * 1e6) == 0) {
             Vec3 rp = { pose[0], pose[1], pose[2] };
@@ -1042,18 +1056,17 @@ int main(int argc, char** argv) {
                 // the filter (no wiggle at rest) while sustained real motion
                 // opens it within ~100 ms (little perceived lag).
                 static float speed_hat = 0;
-                const float Te = 1.f / 120.f;
                 float dx = rp.x - head_p.x, dy = rp.y - head_p.y, dz = rp.z - head_p.z;
-                float speed = std::sqrt(dx * dx + dy * dy + dz * dz) / Te; // m/s
+                float speed = std::sqrt(dx * dx + dy * dy + dz * dz) / dt; // m/s
                 const float d_cutoff = 1.8f; // Hz — how fast the speed estimate reacts
-                float ad = 1.f / (1.f + 1.f / (2.f * float(M_PI) * d_cutoff * Te));
+                float ad = one_euro_alpha(d_cutoff, dt);
                 speed_hat += (speed - speed_hat) * ad;
                 float min_cutoff = smooth_pos * 4.f; // default 0.10 → 0.4 Hz at rest
                 // Deadband removes the VIO noise floor from the speed signal,
                 // allowing a strong motion gain without rest wiggle.
                 float speed_eff = std::max(0.f, speed_hat - 0.03f);
                 float cutoff = min_cutoff + 9.f * speed_eff;
-                float ap = 1.f / (1.f + 1.f / (2.f * float(M_PI) * cutoff * Te));
+                float ap = one_euro_alpha(cutoff, dt);
                 head_p.x += dx * ap;
                 head_p.y += dy * ap;
                 head_p.z += dz * ap;
