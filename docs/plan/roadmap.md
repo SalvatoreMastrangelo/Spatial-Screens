@@ -66,36 +66,32 @@ Researched plan: [`phase2-spatial-screens.md`](phase2-spatial-screens.md). Summa
   2026-07-07, hardware pass PASSED (`two_up` gaze-select active screen + green
   border, per-screen pose override retargets distance/size/grab gestures; design
   `docs/specs/2026-07-06-screen-selection-design.md`). Was backlog item #1.
+- Vertical placement + face-the-user: done — hardware pass PASSED 2026-07-08
+  (`feat/head-anchored-reorient`). Vertical placement was already collateral of
+  the retargeted grab; this added **head-anchored reorientation**: a grabbed
+  active screen welds to the head's full rotation delta (yaw+pitch+roll) and
+  world-locks on release, so a screen carried overhead ends up facing you. Design
+  `docs/specs/2026-07-08-head-anchored-reorient-design.md` (a head-delta twin of
+  the position anchor — simpler than, and superseding, the old `face_user_quat`
+  look-at plan in `docs/specs/2026-07-06-vertical-placement-design.md`). Was
+  backlog item #1. Optional polish still open (backlog, low priority): the
+  `Ctrl+Alt+PageUp/Down` vertical-nudge hotkeys + a ±1.5 m elevation clamp.
 - Next: M4 preset & layout engine; M5 outreach.
 
 ### Future ideas / possible additions (backlog)
 
 Forward-looking feature ideas, now with design docs (2026-07-06) ready to seed
-isolated feature worktrees. The foundation — **per-screen selection** — is now
-**done** (see Status), so items 1–2 below are unblocked and each builds on it.
-Item 3 is an independent track (no dependency on selection).
+isolated feature worktrees. The foundation — **per-screen selection** — is
+**done** (see Status), as is **vertical placement + face-the-user** (see Status);
+item 1 below builds on selection, item 2 is an independent track.
 
-1. **Vertical placement + face-the-user** *(builds on per-screen selection;
-   half already landed)* — design:
-   [`docs/specs/2026-07-06-vertical-placement-design.md`](../specs/2026-07-06-vertical-placement-design.md).
-   Vertical *placement* is **already done as collateral** of per-screen
-   selection: the retargeted two-hand grab writes a full unrestricted 3D
-   `pose_pos` with a genuine head-up component (`main.cpp:859-866`,
-   `gesture_manip.cpp:30-35`), so screens already move higher/lower freely.
-   What remains: **face-the-user** — on grab-release a screen should re-orient
-   its normal toward the head (a `face_user_quat` look-at with gravity-up roll
-   lock) and world-lock, so a screen lifted overhead stays readable. The grab
-   currently holds orientation fixed on purpose (`main.cpp:850`); the only
-   facing write today is fist-hold recenter, which *relocates* onto the gaze
-   axis rather than re-facing in place. Optional polish still open:
-   `Ctrl+Alt+PageUp/Down` nudge hotkeys + a ±1.5 m elevation comfort clamp.
-2. **Floating window screens (decouple from physical displays)** *(builds on
+1. **Floating window screens (decouple from physical displays)** *(builds on
    per-screen selection; largest)* — design:
    [`docs/specs/2026-07-06-floating-window-screens-design.md`](../specs/2026-07-06-floating-window-screens-design.md).
    A screen's source becomes `{monitor-region | window}`: per-window XComposite
    capture with its own texture, and `Ctrl+Alt+W` grabs the focused window onto
    the active screen — a free-floating panel, not a slice of a physical output.
-3. **Camera fusion for depth** *(independent track — the proper next project;
+2. **Camera fusion for depth** *(independent track — the proper next project;
    deferred 2026-07-06)* — design (surfaced by the two-hand gestures feature):
    [`docs/specs/2026-07-06-two-hand-gestures-design.md`](../specs/2026-07-06-two-hand-gestures-design.md)
    ("Future ideas"). Fuse the two grayscale tracking cameras to recover each
