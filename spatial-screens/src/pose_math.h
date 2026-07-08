@@ -37,6 +37,16 @@ inline Vec3 qrot(const Quat& q, const Vec3& v) {
              v.z + q.w * tz + (q.x * ty - q.y * tx) };
 }
 
+// A grabbed screen "welds" to the head: re-express start_ori (a WORLD
+// orientation, captured at grab start) under the head's full rotation delta
+// from head_start to head_now (yaw+pitch+roll). The orientation twin of the
+// head-local position anchor (grab_rel0). Pure quaternion product of the head
+// pose and constants — no look-at, no roll lock, no overhead singularity.
+inline Quat head_delta_orient(const Quat& start_ori,
+                              const Quat& head_start, const Quat& head_now) {
+    return qmul(qmul(head_now, qconj(head_start)), start_ori);
+}
+
 // Column-major 4x4 from rotation quat + translation (OpenGL convention).
 inline void mat_from_pose(const Quat& q, const Vec3& t, float* m) {
     float xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;

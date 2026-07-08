@@ -69,6 +69,8 @@ def classify_pose(landmarks):
         return "open_palm"
     if not curled[0] and all(curled[1:]):
         return "point"
+    if not curled[0] and not curled[1] and curled[2] and curled[3]:
+        return "two_up"
     return "none"
 
 

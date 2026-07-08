@@ -104,6 +104,8 @@ static constexpr double FIST_HOLD_SECONDS = 0.5;          // how long a fist mus
 static constexpr float GRAB_REPOSITION_GAIN = 1.5f; // image-fraction -> world-fraction; tune on hardware
 static constexpr float GRAB_DIAG_MIN = 20.f;        // inches
 static constexpr float GRAB_DIAG_MAX = 200.f;       // inches
+static constexpr float SELECT_CONE_DEG = 40.f;  // gaze cone half-angle for pick
+static constexpr float SELECT_BORDER_M = 0.003f; // green border thickness (m) — thin frame (hardware-tuned 2026-07-06)
 
 static void on_imu_noop(float*, double) {}
 static void on_pose_noop(float*, double) {}
@@ -638,6 +640,28 @@ int main(int argc, char** argv) {
         anchored = true;
     };
 
+    int active_screen = -1;              // -1 = none (rack-global); else scene idx
+
+    // Move the active screen toward/away along the line from the USER (head) to
+    // the screen — "distance from me", not from the rack origin — clamped to a
+    // comfortable range. Orientation is preserved. No-op if nothing is selected.
+    auto scale_active_distance = [&](float f) {
+        if (active_screen < 0) return;
+        Quat sq; Vec3 sp;
+        scene_screen_pose(scene[active_screen], rack_q, rack_p, rack_dist_scale, sq, sp);
+        Vec3 hp = qrot(qconj(ori_offset), head_p);   // head in the rack/world frame
+        Vec3 d = { sp.x - hp.x, sp.y - hp.y, sp.z - hp.z };
+        float len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+        if (len < 1e-6f) return;
+        float nlen = std::clamp(len * f, 0.25f, 10.f);
+        float s = nlen / len;
+        Vec3 wp = { hp.x + d.x * s, hp.y + d.y * s, hp.z + d.z * s };
+        world_to_rack_frame(rack_q, rack_p, sq, wp,
+                            scene[active_screen].cfg.pose_ori,
+                            scene[active_screen].cfg.pose_pos);
+        scene[active_screen].cfg.has_pose_override = true;
+    };
+
     auto now_s = [] {
         using namespace std::chrono;
         return duration<double>(steady_clock::now().time_since_epoch()).count();
@@ -664,15 +688,23 @@ int main(int argc, char** argv) {
     float pinch_prev_y[2] = {0.f, 0.f};
     double fist_start_s[2] = {-1.0, -1.0};
     bool fist_triggered[2] = {false, false};
+    bool was_two_up[2] = {false, false}; // rising-edge latch per hand for select
+    double two_fist_start_s = -1.0;      // both-hands-fist global-recenter hold timer
+    bool two_fist_triggered = false;
     // Two-hand grab (resize + reposition).
     GrabState grab;
     float grab_scale0 = 1.f;   // rack_size_scale snapshot at grab start (rack mode)
+    Vec3 grab_rel0;            // grabbed anchor's offset in the head-local frame at grab start
+    Quat grab_ori0;            // active screen's WORLD orientation at grab start
+    Quat grab_head_q0;         // head orientation (recentered frame) at grab start — grab follows head pose
 
     printf("running — hotkeys work globally with Ctrl+Alt: R recenter (Shift adds "
            "VIO reset), [ ] distance, - = size, Q quit\n"
-           "gestures (if sidecar connected): open palm=arm (either hand); armed "
-           "hand pinch-drag vertical=distance, fist-hold(0.5s)=recenter; "
-           "both hands armed+pinching: spread=resize, midpoint=reposition\n");
+           "gestures (if sidecar connected): open palm=arm (either hand); "
+           "index+middle (two-up) while looking at a screen=select it; armed hand "
+           "pinch-drag vertical=distance, fist-hold(0.5s)=recenter selected screen "
+           "(or rack if none); both hands armed+pinching: spread=resize, "
+           "midpoint=reposition; both fists(0.5s)=global recenter\n");
 
     while (g_running) {
         // ---- input
@@ -703,21 +735,27 @@ int main(int argc, char** argv) {
                 tele.log("info", "recentered");
             }
             else if (ks == XK_bracketleft) {
-                if (multi) rack_dist_scale = std::max(0.25f, rack_dist_scale * 0.9f);
+                if (active_screen >= 0) scale_active_distance(0.9f);
+                else if (multi) rack_dist_scale = std::max(0.25f, rack_dist_scale * 0.9f);
                 else { distance = std::max(0.5f, distance - 0.25f); scene[0].cfg.distance = distance; }
                 place_rack();
             }
             else if (ks == XK_bracketright) {
-                if (multi) rack_dist_scale = std::min(4.f, rack_dist_scale * 1.1f);
+                if (active_screen >= 0) scale_active_distance(1.1f);
+                else if (multi) rack_dist_scale = std::min(4.f, rack_dist_scale * 1.1f);
                 else { distance = std::min(10.f, distance + 0.25f); scene[0].cfg.distance = distance; }
                 place_rack();
             }
             else if (ks == XK_minus) {
-                if (multi) rack_size_scale = std::max(0.4f, rack_size_scale * 0.9f);
+                if (active_screen >= 0)
+                    scene[active_screen].cfg.size = std::max(10.f, scene[active_screen].cfg.size - 10.f);
+                else if (multi) rack_size_scale = std::max(0.4f, rack_size_scale * 0.9f);
                 else { diag_in = std::max(10.f, diag_in - 10.f); scene[0].cfg.size = diag_in; }
             }
             else if (ks == XK_equal) {
-                if (multi) rack_size_scale = std::min(3.f, rack_size_scale * 1.1f);
+                if (active_screen >= 0)
+                    scene[active_screen].cfg.size = std::min(400.f, scene[active_screen].cfg.size + 10.f);
+                else if (multi) rack_size_scale = std::min(3.f, rack_size_scale * 1.1f);
                 else { diag_in = std::min(400.f, diag_in + 10.f); scene[0].cfg.size = diag_in; }
             }
         }
@@ -763,39 +801,108 @@ int main(int argc, char** argv) {
         GestureEvent gev = g_gestures.poll();
         HandState* hands[2] = { &gev.left, &gev.right };
         for (int i = 0; i < 2; i++) {
-            if (!hands[i]->present) armed[i] = false;      // hand gone -> re-arm
+            if (!hands[i]->present) { armed[i] = false; was_two_up[i] = false; }
             if (hands[i]->pose == "open_palm") armed[i] = true;
         }
+        // Defensive: a screen count can shrink (future feature) — never index OOB.
+        if (active_screen >= int(scene.size())) active_screen = -1;
 
-        bool grab_now = gev.left.present && gev.right.present &&
-                        armed[0] && armed[1] &&
-                        gev.left.pinching && gev.right.pinching;
+        bool both_ready = gev.left.present && gev.right.present && armed[0] && armed[1];
+        // Both fists (held) = GLOBAL recenter. A closed fist can also register as
+        // pinching, so exclude the both-fist case from the pinch-grab and let the
+        // two-fist gesture take priority over it.
+        bool two_fist_now = both_ready && gev.left.pose == "fist" && gev.right.pose == "fist";
+        bool grab_now = both_ready && gev.left.pinching && gev.right.pinching && !two_fist_now;
+        if (!two_fist_now) { two_fist_start_s = -1; two_fist_triggered = false; }
 
-        if (grab_now) {
+        if (two_fist_now) {
+            if (two_fist_start_s < 0) { two_fist_start_s = now_s(); two_fist_triggered = false; }
+            else if (!two_fist_triggered && now_s() - two_fist_start_s > FIST_HOLD_SECONDS) {
+                ori_offset = yaw_twist(head_q);
+                place_rack();
+                printf("gesture recenter (two-fist, global)\n");
+                tele.log("info", "recentered (global)");
+                two_fist_triggered = true;
+                armed[0] = armed[1] = false;
+            }
+            grab.active = false;   // both fists supersede any pinch-grab in progress
+            for (int i = 0; i < 2; i++) {
+                was_pinching[i] = false; fist_start_s[i] = -1;
+                fist_triggered[i] = false; was_two_up[i] = false;
+            }
+        } else if (grab_now) {
             if (!grab.active) {
                 Vec3 rr = qrot(rack_q, { 1, 0, 0 });
                 Vec3 uu = qrot(rack_q, { 0, 1, 0 });
+                float size0 = diag_in;
+                Vec3 anchor0 = { rack_p.x, rack_p.y, rack_p.z };
+                if (active_screen >= 0) {
+                    Quat sq; Vec3 sp;
+                    scene_screen_pose(scene[active_screen], rack_q, rack_p,
+                                      rack_dist_scale, sq, sp);
+                    anchor0 = sp;
+                    size0 = scene[active_screen].cfg.size;
+                    grab_ori0 = sq;   // weld reference
+                }
                 grab = grab_begin(gev.left.pinch_x, gev.left.pinch_y,
                                   gev.right.pinch_x, gev.right.pinch_y,
-                                  diag_in, { rack_p.x, rack_p.y, rack_p.z },
+                                  size0, { anchor0.x, anchor0.y, anchor0.z },
                                   { rr.x, rr.y, rr.z }, { uu.x, uu.y, uu.z });
                 grab_scale0 = rack_size_scale;   // baseline for rack-mode resize
+                // Head-anchored grab: store the anchor's offset in the HEAD-local
+                // frame at grab start, so the grab follows the head pose (look/lean
+                // and the screen comes with you); hand motion nudges it on top.
+                Quat head_rc0 = qmul(qconj(ori_offset), head_q);
+                grab_head_q0 = head_rc0;   // head-delta baseline
+                Vec3 hp0 = qrot(qconj(ori_offset), head_p);
+                Vec3 off0 = { anchor0.x - hp0.x, anchor0.y - hp0.y, anchor0.z - hp0.z };
+                grab_rel0 = qrot(qconj(head_rc0), off0);
             } else {
                 GrabResult gr = grab_update(grab, gev.left.pinch_x, gev.left.pinch_y,
                                             gev.right.pinch_x, gev.right.pinch_y,
                                             distance, GRAB_REPOSITION_GAIN,
                                             GRAB_DIAG_MIN, GRAB_DIAG_MAX);
-                // Reposition: move the rack origin in its own right/up plane.
-                rack_p = { gr.anchor.x, gr.anchor.y, gr.anchor.z };
-                // Resize: single screen -> diagonal inches (mirror to scene[0]);
-                // multi-screen rack -> a uniform size scale. grab.size0 is the
-                // diag_in snapshot, so gr.diag/size0 is the spread ratio.
-                if (multi) {
-                    float ratio = gr.diag / std::max(1e-3f, grab.size0);
-                    rack_size_scale = std::clamp(grab_scale0 * ratio, 0.4f, 3.f);
+                if (active_screen >= 0) {
+                    // Reposition + resize the ONE active screen. HEAD-ANCHORED:
+                    // rebuild the anchor from the CURRENT head pose + the stored
+                    // head-local offset, nudged by the pinch-midpoint delta in the
+                    // head's right/up plane, so the screen follows head motion
+                    // (look/lean and it comes with you) while hands fine-tune it.
+                    // gr.anchor is unused here; gr.diag (spread) drives size.
+                    // Orientation is head-anchored too: the screen welds to the head's
+                    // full rotation delta (yaw+pitch+roll) and world-locks on release —
+                    // the orientation twin of the head-local position anchor above.
+                    // Head-anchoring is gated to the active-screen branch because the
+                    // rack origin sits ON the head (d0->0 there).
+                    Quat head_rc = qmul(qconj(ori_offset), head_q);
+                    Vec3 hp = qrot(qconj(ori_offset), head_p);
+                    float d0 = std::sqrt(grab_rel0.x * grab_rel0.x +
+                                         grab_rel0.y * grab_rel0.y + grab_rel0.z * grab_rel0.z);
+                    float mid_x = 0.5f * (gev.left.pinch_x + gev.right.pinch_x);
+                    float mid_y = 0.5f * (gev.left.pinch_y + gev.right.pinch_y);
+                    float dmx = mid_x - grab.mid0x, dmy = mid_y - grab.mid0y;
+                    Vec3 rel = { grab_rel0.x + dmx * GRAB_REPOSITION_GAIN * d0,
+                                 grab_rel0.y - dmy * GRAB_REPOSITION_GAIN * d0,
+                                 grab_rel0.z };
+                    Vec3 rw = qrot(head_rc, rel);
+                    Vec3 anchor = { hp.x + rw.x, hp.y + rw.y, hp.z + rw.z };
+                    Quat world_ori = head_delta_orient(grab_ori0, grab_head_q0, head_rc);
+                    world_to_rack_frame(rack_q, rack_p, world_ori, anchor,
+                                        scene[active_screen].cfg.pose_ori,
+                                        scene[active_screen].cfg.pose_pos);
+                    scene[active_screen].cfg.has_pose_override = true;  // already true; explicit
+                    scene[active_screen].cfg.size = gr.diag;
                 } else {
-                    diag_in = gr.diag;
-                    scene[0].cfg.size = diag_in;
+                    // Rack-global (nothing selected): hand-driven reposition in the
+                    // rack's right/up plane (world-anchored) — the pre-tweak behavior.
+                    rack_p = { gr.anchor.x, gr.anchor.y, gr.anchor.z };
+                    if (multi) {
+                        float ratio = gr.diag / std::max(1e-3f, grab.size0);
+                        rack_size_scale = std::clamp(grab_scale0 * ratio, 0.4f, 3.f);
+                    } else {
+                        diag_in = gr.diag;
+                        scene[0].cfg.size = diag_in;
+                    }
                 }
             }
             // Suppress single-hand logic and reset its per-hand run-state so it
@@ -814,13 +921,73 @@ int main(int argc, char** argv) {
             // (fist-hold recenter takes priority over pinch-drag distance).
             for (int i = 0; i < 2; i++) {
                 HandState& h = *hands[i];
+                if (armed[i] && h.pose == "two_up") {
+                    if (!was_two_up[i]) {           // rising edge only
+                        // Recentered head frame — matches the screens' world frame.
+                        Quat head_rc = qmul(qconj(ori_offset), head_q);
+                        Quat head_pick = qmul(head_rc, trim);  // match render camera (view applies trim); else pick is pitch_trim off
+                        Vec3 hp = qrot(qconj(ori_offset), head_p);
+                        std::vector<Vec3> spos(scene.size());
+                        for (size_t k = 0; k < scene.size(); k++) {
+                            Quat sq; Vec3 sp;
+                            scene_screen_pose(scene[k], rack_q, rack_p,
+                                              rack_dist_scale, sq, sp);
+                            spos[k] = sp;
+                        }
+                        int pick = pick_gaze_screen(spos, hp, head_pick, SELECT_CONE_DEG);
+                        active_screen = pick;        // -1 doubles as deselect
+                        if (pick >= 0 && !scene[pick].cfg.has_pose_override) {
+                            if (multi) scene[pick].cfg.size *= rack_size_scale;  // fold rack scale in -> no size jump when we detach it below
+                            // Seed the override from the formula pose so retarget
+                            // gestures have a well-defined pose and there's no jump.
+                            Quat wq; Vec3 wp;
+                            scene_screen_pose(scene[pick], rack_q, rack_p,
+                                              rack_dist_scale, wq, wp);
+                            world_to_rack_frame(rack_q, rack_p, wq, wp,
+                                                scene[pick].cfg.pose_ori,
+                                                scene[pick].cfg.pose_pos);
+                            scene[pick].cfg.has_pose_override = true;
+                        }
+                        printf("gesture select -> screen %d\n", active_screen);
+                        tele.log("info", pick >= 0 ? "screen selected" : "screen deselected");
+                        armed[i] = false;            // one action per open-hand arm
+                    }
+                    was_two_up[i] = true;
+                    was_pinching[i] = false;
+                    fist_start_s[i] = -1;
+                    break;                            // this hand owns the frame
+                }
+                was_two_up[i] = false;
                 if (armed[i] && h.pose == "fist") {
                     if (fist_start_s[i] < 0) { fist_start_s[i] = now_s(); fist_triggered[i] = false; }
                     else if (!fist_triggered[i] && now_s() - fist_start_s[i] > FIST_HOLD_SECONDS) {
-                        ori_offset = yaw_twist(head_q);
-                        place_rack();
-                        printf("gesture recenter (fist-hold)\n");
-                        tele.log("info", "recentered");
+                        if (active_screen >= 0) {
+                            // Per-screen recenter: bring the active screen directly in
+                            // front of the user, facing them, keeping its current
+                            // distance from the head. Writes the override (rack frame).
+                            Quat head_rc = qmul(qconj(ori_offset), head_q);
+                            Quat face = qmul(head_rc, trim);       // matches render forward
+                            Vec3 hp = qrot(qconj(ori_offset), head_p);
+                            Vec3 fw = qrot(face, { 0, 0, -1 });
+                            Quat cq; Vec3 cp;
+                            scene_screen_pose(scene[active_screen], rack_q, rack_p,
+                                              rack_dist_scale, cq, cp);
+                            float ddx = cp.x - hp.x, ddy = cp.y - hp.y, ddz = cp.z - hp.z;
+                            float d = std::sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
+                            if (d < 0.3f) d = 0.75f;               // guard: don't collapse onto the head
+                            Vec3 wp = { hp.x + fw.x * d, hp.y + fw.y * d, hp.z + fw.z * d };
+                            world_to_rack_frame(rack_q, rack_p, face, wp,
+                                                scene[active_screen].cfg.pose_ori,
+                                                scene[active_screen].cfg.pose_pos);
+                            scene[active_screen].cfg.has_pose_override = true;
+                            printf("gesture recenter (fist-hold, screen %d)\n", active_screen);
+                            tele.log("info", "screen recentered");
+                        } else {
+                            ori_offset = yaw_twist(head_q);
+                            place_rack();
+                            printf("gesture recenter (fist-hold, global)\n");
+                            tele.log("info", "recentered");
+                        }
                         fist_triggered[i] = true;
                         armed[i] = false;      // one gesture per open-hand arm
                     }
@@ -831,7 +998,9 @@ int main(int argc, char** argv) {
                     fist_triggered[i] = false;
                     if (was_pinching[i]) {
                         float dy = h.pinch_y - pinch_prev_y[i]; // image space: +y down
-                        if (multi) {
+                        if (active_screen >= 0) {
+                            scale_active_distance(1.f - dy * PINCH_DISTANCE_SENSITIVITY * 0.5f);
+                        } else if (multi) {
                             rack_dist_scale = std::clamp(
                                 rack_dist_scale * (1.f - dy * PINCH_DISTANCE_SENSITIVITY * 0.5f),
                                 0.25f, 4.f);
@@ -980,10 +1149,10 @@ int main(int argc, char** argv) {
             refresh_projection();
 
         // ---- render
-        // Draw-list caps tie together, per eye: config's 16-screen max + VO
-        // dot + 2 per-hand status dots + 2 hands x 21 landmarks = 61 <= 64.
-        // Bump any of those caps and this must grow too.
-        QuadDraw draws[2][64];
+        // Draw-list caps tie together, per eye: config's 16-screen max
+        // + 4 active-screen border bars + VO dot + 2 per-hand status dots
+        // + 2 hands x 21 landmarks = 65 <= 72. Bump any cap and this grows too.
+        QuadDraw draws[2][72];
         int ndraw[2] = {0, 0};
         if (have_pose && anchored) {
             // view = trim ⊗ inverse(recentered head pose)
@@ -1021,15 +1190,19 @@ int main(int argc, char** argv) {
                 mat_projection_vk(r, t, near_z, far_z, proj);
 
                 const float white[4] = { 1, 1, 1, 1 };
+                // Shared "selection/pinch active" green — the selection border,
+                // the pinch-status dot, and the fingertip highlight must all use
+                // the same green (design: the feedback channels agree).
+                const float status_green[4] = { 0.20f, 0.90f, 0.30f, 1.f };
                 for (int i = 0; i < nscene; i++) {
-                    if (nd >= 64) break;
+                    if (nd >= 72) break;
                     const ScreenInst& s = *order[i].s;
                     float model[16], vm[16], smvp[16];
                     mat_from_pose(order[i].q, order[i].p, model);
                     mat_mul(view, model, vm);
                     mat_mul(proj, vm, smvp);
                     float aspect = multi ? s.aspect : cap_aspect;
-                    float diag_m = s.cfg.size * (multi ? rack_size_scale : 1.f) * 0.0254f;
+                    float diag_m = s.cfg.size * ((multi && !s.cfg.has_pose_override) ? rack_size_scale : 1.f) * 0.0254f;
                     float w2 = diag_m * aspect / std::sqrt(1 + aspect * aspect) * 0.5f;
                     float h2 = diag_m / std::sqrt(1 + aspect * aspect) * 0.5f;
                     QuadDraw& d = dl[nd++];
@@ -1038,6 +1211,30 @@ int main(int argc, char** argv) {
                     d.rect[0] = 0; d.rect[1] = 0; d.rect[2] = w2; d.rect[3] = h2;
                     memcpy(d.uv, s.uv, sizeof(s.uv));
                     d.textured = true;
+                    // Selected-screen highlight: a green frame OUTSIDE the
+                    // content rect [±w2,±h2], coplanar with the screen (shares
+                    // smvp) so it gets correct per-eye stereo and never overlaps
+                    // the content. order[] is the sorted draw order; match the
+                    // active screen by identity, not index.
+                    if (active_screen >= 0 && order[i].s == &scene[active_screen]) {
+                        const float b = SELECT_BORDER_M;
+                        // top, bottom, left, right (top/bottom widened by b to fill corners)
+                        const float bars[4][4] = {
+                            { 0.f,        h2 + b * 0.5f, w2 + b,      b * 0.5f },
+                            { 0.f,      -(h2 + b * 0.5f), w2 + b,      b * 0.5f },
+                            { -(w2 + b * 0.5f), 0.f,      b * 0.5f,    h2       },
+                            {  (w2 + b * 0.5f), 0.f,      b * 0.5f,    h2       },
+                        };
+                        for (int e = 0; e < 4 && nd < 72; e++) {
+                            QuadDraw& bd = dl[nd++];
+                            memcpy(bd.mvp, smvp, sizeof(smvp));
+                            memcpy(bd.color, status_green, 4 * sizeof(float));
+                            bd.rect[0] = bars[e][0]; bd.rect[1] = bars[e][1];
+                            bd.rect[2] = bars[e][2]; bd.rect[3] = bars[e][3];
+                            bd.textured = false;
+                            bd.circle = false;
+                        }
+                    }
                 }
                 // `mvp` below (HUD blocks) previously reused the screen's matrix
                 // chain; the HUD only ever used proj-based matrices, which are
@@ -1060,11 +1257,6 @@ int main(int argc, char** argv) {
                 d.rect[0] = 0; d.rect[1] = 0; d.rect[2] = dot_r; d.rect[3] = dot_r;
                 d.textured = false;
                 d.circle = true;
-
-                // Shared "pinch active" green — the pinch-status dot and the
-                // fingertip highlight must use the same green (design: the two
-                // feedback channels agree).
-                const float status_green[4] = { 0.20f, 0.90f, 0.30f, 1.f };
 
                 // Per-hand pinch/arm-status dots: one per hand at the bottom
                 // corners (left hand -> bottom-left, right hand -> bottom-right),
@@ -1131,7 +1323,7 @@ int main(int argc, char** argv) {
                         // Unarmed: the whole hand is drawn mildly transparent;
                         // arming (open palm) makes it opaque.
                         const float ov_alpha = armed[hnd] ? 1.f : 0.45f;
-                        for (int i = 0; i < 21 && nd < 64; i++) {
+                        for (int i = 0; i < 21 && nd < 72; i++) {
                             float nx = h.landmarks[i][0];
                             float ny = h.landmarks[i][1];
                             // Normalized image coords -> panel-local. Image y is

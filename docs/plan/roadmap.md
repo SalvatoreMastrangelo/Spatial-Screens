@@ -62,38 +62,39 @@ Researched plan: [`phase2-spatial-screens.md`](phase2-spatial-screens.md). Summa
   Hand-gesture control (pinch-drag, fist-hold) also merged.
 - Stereo/SBS multi-screen: done — merged 2026-07-06 (`feat/stereo-3d`, 8/8
   hardware pass; design `docs/specs/2026-07-05-stereo-3d-design.md`).
+- Per-screen selection & independent manipulation: done — landed on `main`
+  2026-07-07, hardware pass PASSED (`two_up` gaze-select active screen + green
+  border, per-screen pose override retargets distance/size/grab gestures; design
+  `docs/specs/2026-07-06-screen-selection-design.md`). Was backlog item #1.
+- Vertical placement + face-the-user: done — hardware pass PASSED 2026-07-08
+  (`feat/head-anchored-reorient`). Vertical placement was already collateral of
+  the retargeted grab; this added **head-anchored reorientation**: a grabbed
+  active screen welds to the head's full rotation delta (yaw+pitch+roll) and
+  world-locks on release, so a screen carried overhead ends up facing you. Design
+  `docs/specs/2026-07-08-head-anchored-reorient-design.md` (a head-delta twin of
+  the position anchor — simpler than, and superseding, the old `face_user_quat`
+  look-at plan in `docs/specs/2026-07-06-vertical-placement-design.md`). Was
+  backlog item #1. Optional polish still open (backlog, low priority): the
+  `Ctrl+Alt+PageUp/Down` vertical-nudge hotkeys + a ±1.5 m elevation clamp.
 - Next: M4 preset & layout engine; M5 outreach.
 
 ### Future ideas / possible additions (backlog)
 
 Forward-looking feature ideas, now with design docs (2026-07-06) ready to seed
-isolated feature worktrees. Items 1–3 share one dependency chain: **per-screen
-selection is the foundation** the other two build on, so implement in that
-order. Item 4 is an independent track (no dependency on 1–3).
+isolated feature worktrees. The foundation — **per-screen selection** — is
+**done** (see Status), as is **vertical placement + face-the-user** (see Status);
+item 1 below builds on selection, item 2 is an independent track.
 
-1. **Per-screen selection & independent manipulation** *(foundation — build
-   first)* — design:
-   [`docs/specs/2026-07-06-screen-selection-design.md`](../specs/2026-07-06-screen-selection-design.md).
-   An index+middle "select" pose picks the screen nearest your gaze; the active
-   screen is highlighted; existing gestures (one-hand distance, two-hand grab)
-   retarget to it via a new per-screen world pose override. Lets each screen
-   move independently instead of everything acting on the whole rack.
-2. **Vertical placement + face-the-user** *(builds on #1)* — design:
-   [`docs/specs/2026-07-06-vertical-placement-design.md`](../specs/2026-07-06-vertical-placement-design.md).
-   Place screens higher/lower (the two-hand grab already moves vertically); on
-   reposition a screen re-orients to face the user's head, then world-locks
-   ("screens above me, facing me").
-3. **Floating window screens (decouple from physical displays)** *(builds on #1;
-   largest)* — design:
+1. **Floating window screens (decouple from physical displays)** *(builds on
+   per-screen selection; largest)* — design:
    [`docs/specs/2026-07-06-floating-window-screens-design.md`](../specs/2026-07-06-floating-window-screens-design.md).
    A screen's source becomes `{monitor-region | window}`: per-window XComposite
    capture with its own texture, and `Ctrl+Alt+W` grabs the focused window onto
    the active screen — a free-floating panel, not a slice of a physical output.
-4. **Camera fusion for depth** *(independent track — the proper next project;
-   deferred 2026-07-06)* — design:
-   [`docs/specs/2026-07-06-camera-fusion-depth-design.md`](../specs/2026-07-06-camera-fusion-depth-design.md)
-   (surfaced by the two-hand gestures feature's "Future ideas"). Fuse the two
-   grayscale tracking cameras to recover each
+2. **Camera fusion for depth** *(independent track — the proper next project;
+   deferred 2026-07-06)* — design (surfaced by the two-hand gestures feature):
+   [`docs/specs/2026-07-06-two-hand-gestures-design.md`](../specs/2026-07-06-two-hand-gestures-design.md)
+   ("Future ideas"). Fuse the two grayscale tracking cameras to recover each
    hand's true 3D position from stereo disparity — unlocking depth-aware
    gestures (push/pull-to-move-in-Z) a single 2D camera can't do robustly, and
    inherently deduplicating hands (one 3D entity, not one-per-camera). Not a
@@ -101,4 +102,7 @@ order. Item 4 is an independent track (no dependency on 1–3).
    only), so it needs self-calibration → rectification → correspondence →
    triangulation — a multi-day computer-vision effort. Today the sidecar already
    forwards both camera planes but uses only the left; the second is reserved
-   for this.
+   for this. **Status:** DONE — **MERGED into main 2026-07-09.** Fusion depth
+   (default-on, `--no-fusion` escape hatch) + centered-hand tracking (brightening
+   + both-camera detection union — `docs/specs/2026-07-08-centered-hand-tracking-*`).
+   Hardware pass passed: centered-hand detection 0%→83%, both-hands fps gate held.

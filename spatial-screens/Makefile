@@ -62,7 +62,7 @@ test: gesture-parse-test gesture-manip-test stereo-math-test
 	./gesture-manip-test
 	./stereo-math-test
 
-src/config.o: src/config.cpp src/config.h
+src/config.o: src/config.cpp src/config.h src/pose_math.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 src/telemetry.o: src/telemetry.cpp src/telemetry.h ../bridge/ws_server.hpp

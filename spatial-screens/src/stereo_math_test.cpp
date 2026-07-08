@@ -152,6 +152,120 @@ static void test_scene_pose() {
           std::fabs(p.z) < 1e-5f);
 }
 
+static void test_pose_override() {
+    MonRect fb{"eDP-1", 0, 0, 1920, 1200};
+    std::vector<MonRect> mons = {{"VS1", 0, 0, 1920, 1200}};
+    std::vector<ScreenCfg> cfg(1); cfg[0].monitor = "VS1";
+    auto s = scene_build(cfg, mons, fb);
+
+    // A non-trivial rack (yaw 30°, translated) and an arbitrary world pose.
+    Quat rack_q = quat_axis_angle(0, 1, 0, 30.f);
+    Vec3 rack_p{1.f, 2.f, 3.f};
+    Quat world_q = quat_axis_angle(0, 1, 0, 90.f);
+    Vec3 world_p{4.f, 5.f, 6.f};
+
+    // world_to_rack_frame then scene_screen_pose must round-trip to the world
+    // pose, and dist_scale must be IGNORED once the override is set.
+    world_to_rack_frame(rack_q, rack_p, world_q, world_p,
+                        s[0].cfg.pose_ori, s[0].cfg.pose_pos);
+    s[0].cfg.has_pose_override = true;
+
+    Quat q; Vec3 p;
+    scene_screen_pose(s[0], rack_q, rack_p, /*dist_scale*/7.f, q, p);  // scale ignored
+    CHECK(std::fabs(p.x - 4.f) < 1e-4f);
+    CHECK(std::fabs(p.y - 5.f) < 1e-4f);
+    CHECK(std::fabs(p.z - 6.f) < 1e-4f);
+    // Orientation round-trips (compare as rotated forward axes to avoid sign).
+    Vec3 f_out = qrot(q, {0, 0, -1});
+    Vec3 f_want = qrot(world_q, {0, 0, -1});
+    CHECK(std::fabs(f_out.x - f_want.x) < 1e-4f &&
+          std::fabs(f_out.y - f_want.y) < 1e-4f &&
+          std::fabs(f_out.z - f_want.z) < 1e-4f);
+
+    // Without the override flag, the az/el/dist formula still runs (regression).
+    s[0].cfg.has_pose_override = false;
+    s[0].cfg.azimuth = 0; s[0].cfg.elevation = 0; s[0].cfg.distance = 1.f;
+    scene_screen_pose(s[0], Quat{}, Vec3{0,0,0}, 1.f, q, p);
+    CHECK(std::fabs(p.z + 1.f) < 1e-4f);  // 1 m straight ahead, formula path
+}
+
+static void test_head_delta_orient() {
+    // Screen's start world orientation and the head's start orientation — both
+    // non-trivial so the test would catch a wrong multiply order.
+    Quat sq0 = qmul(quat_axis_angle(0, 1, 0, 20.f), quat_axis_angle(1, 0, 0, 10.f));
+    Quat hq0 = quat_axis_angle(0, 1, 0, -15.f);
+
+    // Zero head motion -> orientation unchanged (no drift).
+    Quat same = head_delta_orient(sq0, hq0, hq0);
+    Vec3 f0 = qrot(sq0, {0, 0, -1}), fs = qrot(same, {0, 0, -1});
+    Vec3 u0 = qrot(sq0, {0, 1, 0}),  us = qrot(same, {0, 1, 0});
+    CHECK(std::fabs(fs.x - f0.x) < 1e-5f && std::fabs(fs.y - f0.y) < 1e-5f &&
+          std::fabs(fs.z - f0.z) < 1e-5f);
+    CHECK(std::fabs(us.x - u0.x) < 1e-5f && std::fabs(us.y - u0.y) < 1e-5f &&
+          std::fabs(us.z - u0.z) < 1e-5f);
+
+    // A head rotation delta D (yaw + roll) applies to the screen in world space:
+    // result must equal D * sq0, roll carried through (full delta, not yaw-only).
+    Quat D   = qmul(quat_axis_angle(0, 1, 0, 40.f), quat_axis_angle(0, 0, 1, 12.f));
+    Quat hq1 = qmul(D, hq0);
+    Quat got = head_delta_orient(sq0, hq0, hq1);
+    Quat want = qmul(D, sq0);
+    Vec3 fg = qrot(got, {0, 0, -1}), fw = qrot(want, {0, 0, -1});
+    Vec3 ug = qrot(got, {0, 1, 0}),  uw = qrot(want, {0, 1, 0});
+    CHECK(std::fabs(fg.x - fw.x) < 1e-4f && std::fabs(fg.y - fw.y) < 1e-4f &&
+          std::fabs(fg.z - fw.z) < 1e-4f);
+    CHECK(std::fabs(ug.x - uw.x) < 1e-4f && std::fabs(ug.y - uw.y) < 1e-4f &&
+          std::fabs(ug.z - uw.z) < 1e-4f);   // up axis matches -> roll carried through
+
+    // Compose exactly as main.cpp does: the head-delta world orientation, stored
+    // rack-relative via world_to_rack_frame, must re-expand through
+    // scene_screen_pose to the same world orientation (and position = anchor).
+    MonRect fb{"eDP-1", 0, 0, 1920, 1200};
+    std::vector<MonRect> mons = {{"VS1", 0, 0, 1920, 1200}};
+    std::vector<ScreenCfg> cfg(1); cfg[0].monitor = "VS1";
+    auto s = scene_build(cfg, mons, fb);
+    Quat rack_q = quat_axis_angle(0, 1, 0, 25.f);
+    Vec3 rack_p{0.5f, 1.f, -0.5f};
+    Vec3 anchor{0.2f, 1.3f, -1.4f};
+    world_to_rack_frame(rack_q, rack_p, got, anchor,
+                        s[0].cfg.pose_ori, s[0].cfg.pose_pos);
+    s[0].cfg.has_pose_override = true;
+    Quat q; Vec3 p;
+    scene_screen_pose(s[0], rack_q, rack_p, 1.f, q, p);
+    Vec3 fq = qrot(q, {0, 0, -1}), fgot = qrot(got, {0, 0, -1});
+    CHECK(std::fabs(fq.x - fgot.x) < 1e-4f && std::fabs(fq.y - fgot.y) < 1e-4f &&
+          std::fabs(fq.z - fgot.z) < 1e-4f);
+    CHECK(std::fabs(p.x - anchor.x) < 1e-4f && std::fabs(p.y - anchor.y) < 1e-4f &&
+          std::fabs(p.z - anchor.z) < 1e-4f);
+}
+
+static void test_pick_gaze_screen() {
+    Quat head_q;                 // identity → forward = (0,0,-1)
+    Vec3 head_p{0, 0, 0};
+
+    // Dead-center screen wins over an off-axis one.
+    std::vector<Vec3> two = { {0, 0, -2},      // straight ahead, dot = 1
+                              {2, 0, -2} };     // 45° off, dot ≈ 0.707
+    CHECK(pick_gaze_screen(two, head_p, head_q, 40.f) == 0);
+
+    // The 45° screen alone is outside a 40° cone → nothing selected.
+    std::vector<Vec3> side = { {2, 0, -2} };
+    CHECK(pick_gaze_screen(side, head_p, head_q, 40.f) == -1);
+    // ...but a wider cone admits it.
+    CHECK(pick_gaze_screen(side, head_p, head_q, 50.f) == 0);
+
+    // A screen behind the head is excluded (dot < 0).
+    std::vector<Vec3> behind = { {0, 0, 2} };
+    CHECK(pick_gaze_screen(behind, head_p, head_q, 40.f) == -1);
+
+    // Empty rack → -1.
+    CHECK(pick_gaze_screen({}, head_p, head_q, 40.f) == -1);
+
+    // Degenerate: a screen exactly at the head position is skipped, not NaN.
+    std::vector<Vec3> at_head = { {0, 0, 0}, {0, 0, -1} };
+    CHECK(pick_gaze_screen(at_head, head_p, head_q, 40.f) == 1);
+}
+
 static void test_stereo_math() {
     // Camera shifted +x (right eye) moves world points -x in view space:
     // right eye gets a NEGATIVE view-space offset, left eye positive.
@@ -175,6 +289,9 @@ int main() {
     test_config_keys();
     test_scene_build();
     test_scene_pose();
+    test_pose_override();
+    test_head_delta_orient();
+    test_pick_gaze_screen();
     test_stereo_math();
     if (failures == 0) { printf("stereo_math_test: all checks passed\n"); return 0; }
     printf("stereo_math_test: %d failure(s)\n", failures);

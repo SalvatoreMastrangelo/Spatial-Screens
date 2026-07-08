@@ -76,7 +76,7 @@ classify.py (new "two_up" pose)
 main.cpp render loop
   ├─ active_screen : int   (-1 = none / rack-global)
   ├─ on two_up rising edge → gaze-center pick → set/clear active_screen
-  ├─ highlight the active ScreenInst in the overlay + tint uniform
+  ├─ frame the active ScreenInst with a green outside border (4 edge bars)
   └─ distance / grab gestures: if active_screen>=0 write that screen's
      ScreenCfg (incl. pose override); else keep today's rack-global path
         │
@@ -143,7 +143,9 @@ Quat pose_ori;                    // world orientation, in the rack frame
 order is a problem — `ScreenCfg` already lives beside the math types at use
 sites.)
 
-`scene_screen_pose` gains a short-circuit at the top:
+`scene_screen_pose` gains a short-circuit at the top (note: `dist_scale` is
+**ignored** for an overridden screen — its position is fully specified by
+`pose_pos`):
 
 ```cpp
 if (s.cfg.has_pose_override) {
@@ -152,6 +154,16 @@ if (s.cfg.has_pose_override) {
     return;
 }
 // else: existing yaw/pitch az-el-dist formula
+```
+
+Its inverse — used to seed the override from a formula pose and to store a
+grabbed world pose — is a pure helper in `scene.{h,cpp}`:
+
+```cpp
+// out_pos = qrot(qconj(rack_q), world_p - rack_p);  out_ori = qmul(qconj(rack_q), world_q)
+void world_to_rack_frame(const Quat& rack_q, const Vec3& rack_p,
+                         const Quat& world_q, const Vec3& world_p,
+                         Quat& out_ori, Vec3& out_pos);
 ```
 
 The override is stored **relative to the rack origin** so recenter still moves
@@ -163,31 +175,83 @@ screen). This keeps recenter coherent.
 Where the gesture block currently mutates rack-global scales, branch on
 `active_screen`:
 
-- **One-hand pinch-drag distance:** if `active_screen>=0`, adjust that screen's
-  `cfg.distance` (clamped as today); else keep `rack_dist_scale`.
-- **Size hotkeys / two-hand spread:** if `active_screen>=0`, adjust that
-  screen's `cfg.size`; else keep `rack_size_scale`.
+Once a screen is active it **always carries an override** (selection seeds it —
+see below), so the override world pose is the single source of truth for that
+screen's placement; `cfg.azimuth/elevation/distance` go dormant for it. The
+retargeted manipulations therefore write the *override*, not the az/el/dist
+formula:
+
+- **One-hand pinch-drag distance** (and the `[` `]` hotkeys): if
+  `active_screen>=0`, scale the active screen's `cfg.pose_pos` length — i.e.
+  move it toward/away from the rack origin along its current direction, clamped
+  to `[0.25, 10] m`. (For an overridden screen `cfg.distance` is inert, so
+  "distance" is expressed as `|pose_pos|`.) Else keep `rack_dist_scale`.
+- **Size hotkeys (`-` `=`) / two-hand spread:** if `active_screen>=0`, adjust
+  that screen's `cfg.size` (clamped `[10, 400]` in / to `grab_update`'s
+  `[GRAB_DIAG_MIN, GRAB_DIAG_MAX]`); else keep `rack_size_scale`. (Size is
+  independent of the pose override.)
 - **Two-hand grab reposition:** if `active_screen>=0`, feed the *active screen's*
-  current world pos as `grab_begin`'s `anchor0`, and on each `grab_update` write
-  the returned anchor into that screen's `cfg.pose_pos` with
-  `has_pose_override = true` (convert world→rack-frame with `qconj(rack_q)`).
-  Orientation is still held fixed in this feature (the vertical-placement
-  feature adds face-the-user on release). Else keep today's rack-anchor path.
+  current world pos as `grab_begin`'s `anchor0` (and its `cfg.size` as `size0`),
+  and on each `grab_update` write the returned anchor into that screen's
+  `cfg.pose_pos` (convert world→rack-frame via the `world_to_rack_frame` helper),
+  and its diag into `cfg.size`. Orientation is held fixed in this feature (the
+  vertical-placement feature adds face-the-user on release). Else keep today's
+  rack-anchor path.
 
-Selecting a screen for the first time seeds its override from its current
-formula-derived pose, so there's no jump between "rack-derived" and "overridden".
+Selecting a screen seeds its override from its current formula-derived pose (via
+`world_to_rack_frame`, so `scene_screen_pose` reproduces the exact same pose),
+setting `has_pose_override = true`. There is therefore no jump between
+"rack-derived" and "overridden", and every subsequent manipulation has a
+well-defined override to write.
 
-### 5. Highlight the active screen — renderer + overlay
+### 5. Highlight the active screen — green outside border (decided 2026-07-06)
 
-- Pass a per-screen `highlighted` flag into the draw. Two cheap options; pick
-  one on hardware:
-  - **Tint uniform / push-constant**: `quad.frag` multiplies by a highlight
-    color (subtle warm tint or a brightened border band computed from UV). One
-    new push-constant float; no new geometry.
-  - **Border quad**: the overlay path (already draws hand dots / cursor quads)
-    draws a thin frame around the active screen's quad in view space.
-- Default to the tint (no geometry, works identically in mono and stereo). The
-  overlay border is the fallback if the tint reads poorly through the optics.
+**Requirement:** the active screen is framed by a green border that sits *on the
+outside* of the screen and does **not** obstruct the content inside. This rules
+out the tint approach (multiplying the screen's pixels by a color colors the
+content) — the highlight is pure additive geometry outside the content rect.
+
+**Mechanism — four coplanar green edge-bars.** In `build_eye`'s per-screen loop,
+after the active screen's textured quad is emitted, emit **4 thin solid-color
+quads** that share that screen's `smvp` (so they lie in the screen's plane, at
+its exact world distance/orientation, and therefore get correct per-eye stereo
+for free — same as every other head/world-locked quad). Each bar is placed just
+*outside* the content rect `[±w2, ±h2]` (with `w2,h2` the screen's half-extents
+in meters, as computed today):
+
+```
+  top     rect = ( 0,          +(h2 + b/2),  w2 + b,  b/2 )
+  bottom  rect = ( 0,          -(h2 + b/2),  w2 + b,  b/2 )
+  left    rect = ( -(w2+b/2),   0,           b/2,     h2  )
+  right   rect = ( +(w2+b/2),   0,           b/2,     h2  )
+```
+
+Top/bottom extend `±b` wider so the corners fill. Because the four bars are
+disjoint from `[±w2, ±h2]`, they **cannot overlap the content** — the inside is
+untouched. Being coplanar with the screen they never z-fight it (disjoint
+regions; the app has no depth buffer and relies on painter's order). Each bar is
+`textured = false`, `circle = false`, so it reuses the existing solid-quad path
+— **no shader or pipeline change**.
+
+Emitting the bars *inside* the far→near per-screen loop (right after the active
+screen's own quad) keeps painter's order correct: a nearer screen drawn later
+still overdraws a farther active screen's border.
+
+**Parameters (tunable on the hardware pass):**
+
+- **Thickness** `b = 0.01 m` (fixed, world-space at the screen plane).
+- **Color** = the existing `status_green` `{0.20, 0.90, 0.30, 1.0}` (the same
+  green as the pinch-status feedback; reused deliberately for one UI green).
+
+Which screen is active is independent of gaze *after* selection — the border
+stays on the selected screen until re-selection/deselect, so `active_screen` is
+matched against the sorted draw order by pointer identity
+(`order[i].s == &scene[active_screen]`), not by loop index.
+
+**Draw-list cap.** `main.cpp` sizes the per-eye list `QuadDraw draws[2][64]` with
+a budget comment summing to 61 ≤ 64. The 4 active-screen bars push the worst case
+to 65, so the cap grows to **72** and the budget comment is updated to include
+"+4 active-screen border bars". The per-screen `nd` guard uses the new cap.
 
 ## Data flow / state machine
 
@@ -250,9 +314,10 @@ screens — clamp defensively).
 - `spatial-screens/src/scene.cpp` / `scene.h` — override short-circuit in
   `scene_screen_pose`.
 - `spatial-screens/src/main.cpp` — `active_screen` state, gaze-center pick,
-  retarget branch in the gesture block, highlight flag.
-- `spatial-screens/src/vk_renderer.*` + `shaders/quad.frag` — highlight tint
-  (or overlay border).
+  retarget branch in the gesture block, the 4 green border bars in `build_eye`,
+  and the `draws[2][64]`→`[2][72]` cap bump (+ budget comment).
+- No renderer/shader change — the border reuses the existing solid-quad path
+  (`textured = false`). `vk_renderer.*` and `shaders/*` are untouched.
 - New pure helper + unit test for `pick_gaze_screen` (e.g. in
   `stereo_math_test` or a new `selection_test`).
 - `docs/specs/2026-07-06-screen-selection-design.md` — this document.
