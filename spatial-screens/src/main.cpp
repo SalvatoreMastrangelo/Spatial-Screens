@@ -851,9 +851,11 @@ int main(int argc, char** argv) {
                     // head's right/up plane, so the screen follows head motion
                     // (look/lean and it comes with you) while hands fine-tune it.
                     // gr.anchor is unused here; gr.diag (spread) drives size.
-                    // Orientation is head-anchored too — the screen follows head POSITION,
-                    // not facing. Head-anchoring is gated to the active-screen branch
-                    // because the rack origin sits ON the head (d0->0 there).
+                    // Orientation is head-anchored too: the screen welds to the head's
+                    // full rotation delta (yaw+pitch+roll) and world-locks on release —
+                    // the orientation twin of the head-local position anchor above.
+                    // Head-anchoring is gated to the active-screen branch because the
+                    // rack origin sits ON the head (d0->0 there).
                     Quat head_rc = qmul(qconj(ori_offset), head_q);
                     Vec3 hp = qrot(qconj(ori_offset), head_p);
                     float d0 = std::sqrt(grab_rel0.x * grab_rel0.x +
