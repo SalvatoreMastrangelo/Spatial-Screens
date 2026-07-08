@@ -62,30 +62,50 @@ Researched plan: [`phase2-spatial-screens.md`](phase2-spatial-screens.md). Summa
   Hand-gesture control (pinch-drag, fist-hold) also merged.
 - Stereo/SBS multi-screen: done — merged 2026-07-06 (`feat/stereo-3d`, 8/8
   hardware pass; design `docs/specs/2026-07-05-stereo-3d-design.md`).
+- Per-screen selection & independent manipulation: done — landed on `main`
+  2026-07-07, hardware pass PASSED (`two_up` gaze-select active screen + green
+  border, per-screen pose override retargets distance/size/grab gestures; design
+  `docs/specs/2026-07-06-screen-selection-design.md`). Was backlog item #1.
 - Next: M4 preset & layout engine; M5 outreach.
 
 ### Future ideas / possible additions (backlog)
 
 Forward-looking feature ideas, now with design docs (2026-07-06) ready to seed
-isolated feature worktrees. They share one dependency chain: **per-screen
-selection is the foundation** both other features build on, so implement in the
-order below.
+isolated feature worktrees. The foundation — **per-screen selection** — is now
+**done** (see Status), so items 1–2 below are unblocked and each builds on it.
+Item 3 is an independent track (no dependency on selection).
 
-1. **Per-screen selection & independent manipulation** *(foundation — build
-   first)* — design:
-   [`docs/specs/2026-07-06-screen-selection-design.md`](../specs/2026-07-06-screen-selection-design.md).
-   An index+middle "select" pose picks the screen nearest your gaze; the active
-   screen is highlighted; existing gestures (one-hand distance, two-hand grab)
-   retarget to it via a new per-screen world pose override. Lets each screen
-   move independently instead of everything acting on the whole rack.
-2. **Vertical placement + face-the-user** *(builds on #1)* — design:
+1. **Vertical placement + face-the-user** *(builds on per-screen selection;
+   half already landed)* — design:
    [`docs/specs/2026-07-06-vertical-placement-design.md`](../specs/2026-07-06-vertical-placement-design.md).
-   Place screens higher/lower (the two-hand grab already moves vertically); on
-   reposition a screen re-orients to face the user's head, then world-locks
-   ("screens above me, facing me").
-3. **Floating window screens (decouple from physical displays)** *(builds on #1;
-   largest)* — design:
+   Vertical *placement* is **already done as collateral** of per-screen
+   selection: the retargeted two-hand grab writes a full unrestricted 3D
+   `pose_pos` with a genuine head-up component (`main.cpp:859-866`,
+   `gesture_manip.cpp:30-35`), so screens already move higher/lower freely.
+   What remains: **face-the-user** — on grab-release a screen should re-orient
+   its normal toward the head (a `face_user_quat` look-at with gravity-up roll
+   lock) and world-lock, so a screen lifted overhead stays readable. The grab
+   currently holds orientation fixed on purpose (`main.cpp:850`); the only
+   facing write today is fist-hold recenter, which *relocates* onto the gaze
+   axis rather than re-facing in place. Optional polish still open:
+   `Ctrl+Alt+PageUp/Down` nudge hotkeys + a ±1.5 m elevation comfort clamp.
+2. **Floating window screens (decouple from physical displays)** *(builds on
+   per-screen selection; largest)* — design:
    [`docs/specs/2026-07-06-floating-window-screens-design.md`](../specs/2026-07-06-floating-window-screens-design.md).
    A screen's source becomes `{monitor-region | window}`: per-window XComposite
    capture with its own texture, and `Ctrl+Alt+W` grabs the focused window onto
    the active screen — a free-floating panel, not a slice of a physical output.
+3. **Camera fusion for depth** *(independent track — the proper next project;
+   deferred 2026-07-06)* — design (surfaced by the two-hand gestures feature):
+   [`docs/specs/2026-07-06-two-hand-gestures-design.md`](../specs/2026-07-06-two-hand-gestures-design.md)
+   ("Future ideas"). Fuse the two grayscale tracking cameras to recover each
+   hand's true 3D position from stereo disparity — unlocking depth-aware
+   gestures (push/pull-to-move-in-Z) a single 2D camera can't do robustly, and
+   inherently deduplicating hands (one 3D entity, not one-per-camera). Not a
+   quick fix: the SDK exposes **no stereo calibration** (raw left/right buffers
+   only), so it needs self-calibration → rectification → correspondence →
+   triangulation — a multi-day computer-vision effort. Today the sidecar already
+   forwards both camera planes but uses only the left; the second is reserved
+   for this. **Status:** code-complete on branch `feat/camera-fusion` (default
+   flipped fusion-ON, `--no-fusion` escape hatch), awaiting a hardware pass —
+   not yet merged.
