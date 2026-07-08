@@ -100,6 +100,9 @@ static int g_probe_frames_remaining = 0;
 static GestureClient g_gestures;
 static std::atomic<int> g_cam_w{0};  // tracking-camera frame size, for hand-overlay aspect
 static std::atomic<int> g_cam_h{0};
+static std::atomic<double> g_vsync_last{0.0};      // steady_clock secs of last vsync
+static std::atomic<double> g_vsync_interval{0.0};  // EMA of inter-vsync seconds
+static float g_last_predict_ms = 0.f;              // live prediction horizon; Task 6 writes this, 0 for now
 static constexpr float PINCH_DISTANCE_SENSITIVITY = 4.0f; // tune after hands-on test; higher = faster response to hand motion
 static constexpr double FIST_HOLD_SECONDS = 0.5;          // how long a fist must be held before it triggers recenter
 static constexpr float GRAB_REPOSITION_GAIN = 1.5f; // image-fraction -> world-fraction; tune on hardware
@@ -114,6 +117,19 @@ static void on_pose_noop(float*, double) {}
 static double mono_now_s() {
     using namespace std::chrono;
     return duration<double>(steady_clock::now().time_since_epoch()).count();
+}
+
+static void on_vsync(double /*sdk_ts*/) {
+    // Stamp with OUR monotonic clock, not the SDK timestamp: the render loop
+    // compares against mono_now_s(), so both must share one timebase.
+    double now = mono_now_s();
+    double prev = g_vsync_last.load(std::memory_order_relaxed);
+    if (prev > 0.0) {
+        float iv = vsync_interval_update(g_vsync_interval.load(std::memory_order_relaxed),
+                                         float(now - prev));
+        g_vsync_interval.store(iv, std::memory_order_relaxed);
+    }
+    g_vsync_last.store(now, std::memory_order_relaxed);
 }
 
 static void on_camera_carina(char* image_left0, char* image_right0,
@@ -186,7 +202,7 @@ static bool sdk_init() {
     // rendering, but the first session of the day (pose callback registered)
     // showed live VIO translation while later imu-only sessions did not —
     // cheap insurance in case registration gates the camera pipeline.
-    if (register_callbacks_carina(g_provider, on_pose_noop, nullptr, on_imu_noop, on_camera_carina) != 0 ||
+    if (register_callbacks_carina(g_provider, on_pose_noop, on_vsync, on_imu_noop, on_camera_carina) != 0 ||
         xr_device_provider_initialize(g_provider, nullptr) != 0) {
         fprintf(stderr, "SDK init failed\n");
         return false;
@@ -716,6 +732,9 @@ int main(int argc, char** argv) {
            "(or rack if none); both hands armed+pinching: spread=resize, "
            "midpoint=reposition; both fists(0.5s)=global recenter\n");
 
+    static float dt_ring[256]; int dt_ring_n = 0, dt_ring_pos = 0;
+    float dt_mean_ema = 1.f / 90.f;
+
     while (g_running) {
         // ---- input
         while (g_running && XPending(dpy)) {
@@ -1040,6 +1059,9 @@ int main(int argc, char** argv) {
                  ? (1.f / 90.f)
                  : std::clamp(float(pose_now - last_pose_now), 1.f / 240.f, 1.f / 30.f);
         last_pose_now = pose_now;
+        dt_ring[dt_ring_pos] = dt; dt_ring_pos = (dt_ring_pos + 1) & 255;
+        if (dt_ring_n < 256) dt_ring_n++;
+        dt_mean_ema += (dt - dt_mean_ema) * 0.02f;
         float pose[7] = {0};
         if (get_gl_pose_carina(g_provider, pose, double(predict_ms) * 1e6) == 0) {
             Vec3 rp = { pose[0], pose[1], pose[2] };
@@ -1440,6 +1462,23 @@ int main(int argc, char** argv) {
                    head_p.x, head_p.y, head_p.z,
                    multi ? rack_dist_scale : distance,
                    multi ? rack_size_scale : diag_in);
+
+            // Prediction/latency diagnostics: frame-dt mean/p95/max, vsync clock,
+            // and the live prediction horizon (0 until Task 6 enables it).
+            float dmean = 0, dmax = 0;
+            for (int i = 0; i < dt_ring_n; i++) { dmean += dt_ring[i]; if (dt_ring[i] > dmax) dmax = dt_ring[i]; }
+            if (dt_ring_n) dmean /= dt_ring_n;
+            float dsorted[256];
+            for (int i = 0; i < dt_ring_n; i++) dsorted[i] = dt_ring[i];
+            std::sort(dsorted, dsorted + dt_ring_n);
+            float dp95 = dt_ring_n ? dsorted[(dt_ring_n * 95) / 100] : 0.f;
+            double vs_int = g_vsync_interval.load(std::memory_order_relaxed);
+            double vs_age = mono_now_s() - g_vsync_last.load(std::memory_order_relaxed);
+            bool vs_ok = vs_int > 0.0 && vs_age < 8.0 * vs_int;
+            printf("  predict %.1fms  dt %.1f/%.1f/%.1f ms(mean/p95/max)  vsync %s %.2fms\n",
+                   g_last_predict_ms, dmean * 1e3f, dp95 * 1e3f, dmax * 1e3f,
+                   vs_ok ? "ok" : "ABSENT", vs_int * 1e3);
+
             frames = 0;
             cap_frames = 0;
             last_fps_t = tnow;
