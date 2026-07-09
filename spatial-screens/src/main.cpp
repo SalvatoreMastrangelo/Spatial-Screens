@@ -1050,6 +1050,58 @@ int main(int argc, char** argv) {
             }
         }
 
+        // ---- capture (--capture-hz, default 30; pose stays at panel rate)
+        if (tnow - last_cap_t > 1.0 / capture_hz) {
+            last_cap_t = tnow;
+            if (cap && !cap->alive()) {
+                fprintf(stderr, "capture: %s died — switching\n", cap->name());
+                cap->stop();
+                switch_backend();
+            }
+            CaptureFrame f{};
+            if (cap && cap->latest_frame(f)) {
+                cap_frames++;
+                if (uint32_t(f.w) != vk.tex_w || uint32_t(f.h) != vk.tex_h ||
+                    f.pitch != vk.tex_pitch) {
+                    vkr_destroy_texture(vk);
+                    if (!vkr_init_texture(vk, f.w, f.h, f.pitch)) {
+                        fprintf(stderr, "capture texture rebuild failed\n");
+                        g_running = false;
+                    } else {
+                        cap_aspect = float(f.w) / float(f.h);
+                        tele.log("info", "capture source resized - texture rebuilt");
+                    }
+                }
+                if (g_running) {
+                    vkr_wait_uploads(vk);
+                    vkr_upload(vk, f.data, size_t(f.pitch) * f.h);
+                    cursor_under.valid = false;  // stamp overwritten by the fresh frame
+                }
+            }
+            // Pointer overlay at the tick rate — content frames may arrive
+            // slower (portal only sends on damage), but the cursor should
+            // still move smoothly: restore the pixels under the previous
+            // stamp, re-blend at the current position, re-copy to the GPU.
+            if (g_running && cap && have_xfixes && vk.staging_ptr &&
+                !cap->composites_cursor() && strcmp(cap->name(), "test") != 0) {
+                int sx = 0, sy = 0;
+                if (cursor_source_origin(outputs, capture_name, glasses.name,
+                                         int(vk.tex_w), int(vk.tex_h), sx, sy)) {
+                    uint8_t* st = static_cast<uint8_t*>(vk.staging_ptr);
+                    vkr_wait_uploads(vk);
+                    cursor_restore(cursor_under, st, vk.tex_pitch);
+                    composite_cursor(dpy, st, int(vk.tex_w), int(vk.tex_h),
+                                     vk.tex_pitch, sx, sy, &cursor_under);
+                    vk.tex_dirty = true;
+                }
+            }
+        }
+
+        // Extent changed (swapchain rebuilt — e.g. a panel-mode toggle under
+        // the lease) — re-derive the per-eye projection and render path.
+        if (vk.extent.width != known_extent.width || vk.extent.height != known_extent.height)
+            refresh_projection();
+
         // ---- pose (predicted, then smoothed)
         // Real per-frame sample period for the One-Euro filter (and, later,
         // prediction). Clamped so a stall or a burst can't destabilize alpha.
@@ -1134,58 +1186,6 @@ int main(int argc, char** argv) {
                 win_n = 0;
             }
         }
-
-        // ---- capture (--capture-hz, default 30; pose stays at panel rate)
-        if (tnow - last_cap_t > 1.0 / capture_hz) {
-            last_cap_t = tnow;
-            if (cap && !cap->alive()) {
-                fprintf(stderr, "capture: %s died — switching\n", cap->name());
-                cap->stop();
-                switch_backend();
-            }
-            CaptureFrame f{};
-            if (cap && cap->latest_frame(f)) {
-                cap_frames++;
-                if (uint32_t(f.w) != vk.tex_w || uint32_t(f.h) != vk.tex_h ||
-                    f.pitch != vk.tex_pitch) {
-                    vkr_destroy_texture(vk);
-                    if (!vkr_init_texture(vk, f.w, f.h, f.pitch)) {
-                        fprintf(stderr, "capture texture rebuild failed\n");
-                        g_running = false;
-                    } else {
-                        cap_aspect = float(f.w) / float(f.h);
-                        tele.log("info", "capture source resized - texture rebuilt");
-                    }
-                }
-                if (g_running) {
-                    vkr_wait_uploads(vk);
-                    vkr_upload(vk, f.data, size_t(f.pitch) * f.h);
-                    cursor_under.valid = false;  // stamp overwritten by the fresh frame
-                }
-            }
-            // Pointer overlay at the tick rate — content frames may arrive
-            // slower (portal only sends on damage), but the cursor should
-            // still move smoothly: restore the pixels under the previous
-            // stamp, re-blend at the current position, re-copy to the GPU.
-            if (g_running && cap && have_xfixes && vk.staging_ptr &&
-                !cap->composites_cursor() && strcmp(cap->name(), "test") != 0) {
-                int sx = 0, sy = 0;
-                if (cursor_source_origin(outputs, capture_name, glasses.name,
-                                         int(vk.tex_w), int(vk.tex_h), sx, sy)) {
-                    uint8_t* st = static_cast<uint8_t*>(vk.staging_ptr);
-                    vkr_wait_uploads(vk);
-                    cursor_restore(cursor_under, st, vk.tex_pitch);
-                    composite_cursor(dpy, st, int(vk.tex_w), int(vk.tex_h),
-                                     vk.tex_pitch, sx, sy, &cursor_under);
-                    vk.tex_dirty = true;
-                }
-            }
-        }
-
-        // Extent changed (swapchain rebuilt — e.g. a panel-mode toggle under
-        // the lease) — re-derive the per-eye projection and render path.
-        if (vk.extent.width != known_extent.width || vk.extent.height != known_extent.height)
-            refresh_projection();
 
         // ---- render
         // Draw-list caps tie together, per eye: config's 16-screen max
