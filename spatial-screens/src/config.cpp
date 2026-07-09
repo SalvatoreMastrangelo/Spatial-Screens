@@ -102,7 +102,7 @@ static bool set_screen_option(Options& o, const std::string& k, const std::strin
     std::string f = k.substr(dot2 + 1);
     // Validate field name BEFORE resizing o.screens.
     if (f != "monitor" && f != "azimuth" && f != "elevation" &&
-        f != "distance" && f != "size") {
+        f != "distance" && f != "size" && f != "source" && f != "window-match") {
         return false;
     }
     if (size_t(n) > o.screens.size()) o.screens.resize(size_t(n));
@@ -112,6 +112,8 @@ static bool set_screen_option(Options& o, const std::string& k, const std::strin
     else if (f == "elevation") parse_float(k, v, s.elevation);
     else if (f == "distance") parse_float(k, v, s.distance);
     else if (f == "size") parse_float(k, v, s.size);
+    else if (f == "source") s.source = v;
+    else if (f == "window-match") s.window_match = v;
     return true;
 }
 

@@ -15,6 +15,8 @@ struct ScreenCfg {
     float azimuth = 0.f, elevation = 0.f;
     float distance = 0.75f;
     float size = 24.f;
+    std::string source = "monitor";  // "monitor" | "window"
+    std::string window_match;        // WM_CLASS/title substring, or ":active"
     // Free-placement override (set once a gesture selects/moves this screen).
     // Stored relative to the rack origin so recenter moves it with the rack.
     // When set, scene_screen_pose ignores azimuth/elevation/distance/dist_scale.

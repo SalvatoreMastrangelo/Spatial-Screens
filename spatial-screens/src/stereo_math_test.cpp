@@ -41,6 +41,13 @@ static void test_config_keys() {
     CHECK(std::fabs(o.screens[0].distance - 1.2f) < 1e-6f);
     CHECK(std::fabs(o.screens[0].size - 32.f) < 1e-6f);
 
+    // Window-source keys.
+    CHECK(o.screens[0].source == "monitor");            // default
+    CHECK(set_option(o, "screen.1.source", "window"));
+    CHECK(o.screens[0].source == "window");
+    CHECK(set_option(o, "screen.1.window-match", "code"));
+    CHECK(o.screens[0].window_match == "code");
+
     CHECK(!set_option(o, "screen.1.bogus", "1"));   // unknown sub-key
     CHECK(!set_option(o, "screen.0.monitor", "x")); // N is 1-based
     CHECK(!set_option(o, "screen.17.monitor", "x")); // cap 16
