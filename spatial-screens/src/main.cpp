@@ -102,7 +102,7 @@ static std::atomic<int> g_cam_w{0};  // tracking-camera frame size, for hand-ove
 static std::atomic<int> g_cam_h{0};
 static std::atomic<double> g_vsync_last{0.0};      // steady_clock secs of last vsync
 static std::atomic<double> g_vsync_interval{0.0};  // EMA of inter-vsync seconds
-static float g_last_predict_ms = 0.f;              // live prediction horizon; Task 6 writes this, 0 for now
+static float g_last_predict_ms = 0.f;              // live prediction horizon, gated; written each frame below
 static constexpr float PINCH_DISTANCE_SENSITIVITY = 4.0f; // tune after hands-on test; higher = faster response to hand motion
 static constexpr double FIST_HOLD_SECONDS = 0.5;          // how long a fist must be held before it triggers recenter
 static constexpr float GRAB_REPOSITION_GAIN = 1.5f; // image-fraction -> world-fraction; tune on hardware
@@ -364,6 +364,8 @@ int main(int argc, char** argv) {
     int capture_hz = o.capture_hz;
     float distance = o.distance, diag_in = o.size, pitch_trim = o.pitch_trim;
     float predict_ms = o.predict_ms, smooth_pos = o.smooth_pos, smooth_ori = o.smooth_ori;
+    std::string predict_mode = o.predict_mode;
+    float scanout_ms = o.scanout_ms, predict_cap_ms = o.predict_cap_ms;
     bool force_window = o.window;
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
@@ -734,6 +736,8 @@ int main(int argc, char** argv) {
 
     static float dt_ring[256]; int dt_ring_n = 0, dt_ring_pos = 0;
     float dt_mean_ema = 1.f / 90.f;
+    float speed_hat = 0.f;       // smoothed linear speed (m/s), One-Euro
+    float ang_speed_hat = 0.f;   // smoothed angular speed (deg/frame)
 
     while (g_running) {
         // ---- input
@@ -1114,8 +1118,32 @@ int main(int argc, char** argv) {
         dt_ring[dt_ring_pos] = dt; dt_ring_pos = (dt_ring_pos + 1) & 255;
         if (dt_ring_n < 256) dt_ring_n++;
         dt_mean_ema += (dt - dt_mean_ema) * 0.02f;
+
+        // Prediction horizon (seconds), speed-gated so at rest it decays to ~0
+        // (the failure mode of the earlier fixed --predict-ms). vsync mode times
+        // it to the next scanout; fixed uses the configured predict-ms; off = 0.
+        float gate = predict_gate(speed_hat, ang_speed_hat,
+                                  /*lin_dead*/0.03f, /*lin_ramp*/0.30f,
+                                  /*ang_dead*/2.0f,  /*ang_ramp*/20.0f);
+        double predict_s = 0.0;
+        if (predict_mode != "off") {
+            double cap_s = predict_cap_ms * 1e-3;
+            if (predict_mode == "vsync") {
+                double p = compute_predict_s(pose_now,
+                                             g_vsync_last.load(std::memory_order_relaxed),
+                                             g_vsync_interval.load(std::memory_order_relaxed),
+                                             scanout_ms * 1e-3, cap_s);
+                predict_s = (p >= 0.0) ? p
+                          : std::min(double(dt_mean_ema) + scanout_ms * 1e-3, cap_s); // fallback
+            } else { // "fixed"
+                predict_s = std::min(double(predict_ms) * 1e-3, cap_s);
+            }
+            predict_s *= gate;
+        }
+        g_last_predict_ms = float(predict_s * 1e3);
+
         float pose[7] = {0};
-        if (get_gl_pose_carina(g_provider, pose, double(predict_ms) * 1e6) == 0) {
+        if (get_gl_pose_carina(g_provider, pose, predict_s * 1e9) == 0) {
             Vec3 rp = { pose[0], pose[1], pose[2] };
             Quat rq = { pose[3], pose[4], pose[5], pose[6] };
             if (!have_pose) {
@@ -1129,7 +1157,6 @@ int main(int argc, char** argv) {
                 // speed estimate, so mm-level VIO noise spikes cannot open
                 // the filter (no wiggle at rest) while sustained real motion
                 // opens it within ~100 ms (little perceived lag).
-                static float speed_hat = 0;
                 float dx = rp.x - head_p.x, dy = rp.y - head_p.y, dz = rp.z - head_p.z;
                 float speed = std::sqrt(dx * dx + dy * dy + dz * dz) / dt; // m/s
                 const float d_cutoff = 1.8f; // Hz — how fast the speed estimate reacts
@@ -1150,6 +1177,7 @@ int main(int argc, char** argv) {
                 float dot = head_q.w * rq.w + head_q.x * rq.x + head_q.y * rq.y + head_q.z * rq.z;
                 float sign = dot < 0 ? -1.f : 1.f;
                 float ang = 2.f * std::acos(std::min(1.f, std::fabs(dot))) * 180.f / float(M_PI);
+                ang_speed_hat += (ang - ang_speed_hat) * 0.3f;   // deg/frame EMA
                 // Velocity term dominates quickly: shimmer-damping at rest,
                 // near-raw tracking as soon as the head actually turns.
                 float a = std::min(0.95f, smooth_ori * 0.25f + ang * 1.2f);
