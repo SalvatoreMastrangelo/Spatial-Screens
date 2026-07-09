@@ -32,14 +32,14 @@ struct Options {
     float size = 24.f;                    // diagonal inches
     float pitch_trim = 0.f;               // degrees
     float predict_ms = 0.f;
-    std::string predict_mode = "vsync";   // off|fixed|vsync (head-pose prediction)
-    float scanout_ms = 5.f;               // extra sample-to-photon term (vsync mode)
+    std::string predict_mode = "smoothvel"; // off|fixed|vsync|smoothvel (head-pose prediction)
+    float scanout_ms = 14.f;              // extra sample-to-photon term; hardware-tuned for smoothvel
     float predict_cap_ms = 35.f;          // clamp on the prediction horizon
     float predict_scale = 1.f;            // [0,1] fraction of the gated horizon actually applied
     float ang_dead = 2.f;                 // predict-gate angular deadband (deg/frame)
     float ang_ramp = 20.f;                // predict-gate angular ramp (deg/frame)
     float ori_motion_cap = 0.95f;         // orientation filter transparency ceiling during motion
-    float vel_cutoff = 5.f;               // smoothvel: angular-velocity low-pass cutoff (Hz)
+    float vel_cutoff = 11.f;              // smoothvel: angular-velocity low-pass (Hz); hardware-tuned
     float smooth_pos = 0.10f;
     float smooth_ori = 0.40f;
     bool window = false;

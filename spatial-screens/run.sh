@@ -57,8 +57,7 @@ if [ "$STEREO" = "true" ] && [ "$WORKSPACE" != "off" ] && [ -n "$PANEL" ]; then
 fi
 
 apply_workspace() {
-    local FB_W FB_H NAT NAT_W NAT_H SX SY PGEOM PX PY i name owner row col
-    FB_W=$((TILE_W * COLS)) FB_H=$((TILE_H * ROWS))
+    local FB_W FB_H NAT NAT_W NAT_H PGEOM PX PY i name owner row col
     # Native (preferred) mode of the panel — first mode line flagged '+'.
     NAT="$(xrandr | awk -v out="$PANEL" '
         $1 == out {f=1; next} f && /\+/ {print $1; exit} f && /connected/ {exit}')"
@@ -67,11 +66,14 @@ apply_workspace() {
         echo "workspace: cannot read $PANEL native mode — skipping split" >&2
         return 0
     fi
-    SX=$(awk -v a="$FB_W" -v b="$NAT_W" 'BEGIN{printf "%.6f", a/b}')
-    SY=$(awk -v a="$FB_H" -v b="$NAT_H" 'BEGIN{printf "%.6f", a/b}')
-    echo "workspace: $PANEL -> ${FB_W}x${FB_H} (scale ${SX}x${SY}), grid ${COLS}x${ROWS}"
-    xrandr --output "$PANEL" --scale "${SX}x${SY}"
-    SCALED=1
+    # Native-res grid: tile the NATIVE framebuffer (no upscale), so the composited
+    # pixel count stays at native — far lighter iGPU load than scaling up to
+    # grid*1920x1200 (e.g. 2560x1600 = 4.1MP vs 3840x2400 = 9.2MP for 2x2). Tiles
+    # are native/grid (integer; any remainder is dropped from the last row/col).
+    FB_W=$NAT_W FB_H=$NAT_H
+    TILE_W=$((NAT_W / COLS)) TILE_H=$((NAT_H / ROWS))
+    echo "workspace: $PANEL native ${FB_W}x${FB_H} (no upscale), grid ${COLS}x${ROWS}, tiles ${TILE_W}x${TILE_H}"
+    xrandr --output "$PANEL" --scale 1x1  # normalize any leftover scale from a prior run
     # Tile at the panel's framebuffer origin, not (0,0): --scale/reflow
     # (or a multi-output layout) can move the panel, and the app's
     # containment filter drops every VS monitor not inside it. Read +X+Y

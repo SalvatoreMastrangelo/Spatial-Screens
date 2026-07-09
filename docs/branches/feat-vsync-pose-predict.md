@@ -1,6 +1,8 @@
 # feat/vsync-pose-predict — branch record
 
-**Status: IMPLEMENTATION COMPLETE + reviewed clean. TUNING CAMPAIGN IN PROGRESS — day 1 done 2026-07-09; RESUME tomorrow.** Worktree at `.claude/worktrees/vsync-pose-predict`, based on `main` @ `f38058d`. Not merged.
+**Status: COMPLETE — hardware PASSED 2026-07-09/10, MERGING to main.** Based on `main` @ `f38058d`.
+
+**Final outcome (session 2):** the SDK-vsync prediction hit a hard ceiling (filter-damp→lag, transparent→shake, shake = SDK velocity noise). Broke it with **`smoothvel`** — predict head orientation from OUR de-noised angular velocity (`quat_delta_rotvec`/`quat_integrate` in `predict_math.h`, TDD'd; low-passed at `--vel-cutoff`). Hardware-tuned best tuple **`smoothvel --scanout-ms 14 --vel-cutoff 11`** = "maybe the best" (less swim, no shake, minimal overshoot); now the **compiled default**. **Approach C reprojection** (`--reproject`, off by default): renderer begin/submit split so the pose is sampled after the vblank-paced acquire — NO change single-screen (GPU not the bottleneck; residual is sensor→fused-pose latency; real fix would be raw-IMU late-latch, deferred); kept for the GPU-bound multi-screen case. **Framerate:** 2×2 stereo was composite-bound (~74fps judder); switched `run.sh` to a **native-res grid** (tile native 2560×1600 instead of upscaling to 3840×2400) → **~88fps at 2×2** with smoothvel+gestures, NPU offload proved unnecessary. Full default config (`./run.sh`, no flags) hardware-validated at 2×2: judder gone, swim reduced, gestures work, 1280×800/screen accepted. Also added `--no-gestures` (fps A/B). Commits: `fa3b4fa` calibration knobs · `f9f98c6` smoothvel · `1de6fb3` reproject · finalization (defaults + native-res grid).
 
 ## What it does
 
