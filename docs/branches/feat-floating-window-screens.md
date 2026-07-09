@@ -20,10 +20,16 @@ renderer; scope decision: **runtime spawn kept in v1, append-only**).
 - [x] Precondition check: `libXcomposite-dev` + runtime `Composite` present; X11
       session; `libXdamage`/`libXfixes` present. `-lXcomposite` not yet linked.
 - [x] Design freshness pass complete + committed.
-- [ ] User review of the reconciled spec.
+- [x] User additions folded in (2026-07-09): native-res "definition" texture;
+      source-window resize scales panel size proportionally at same aspect
+      (size model Option 1; angular-DPI → future); **active-screen-only X×Y
+      label rendered just outside the panel** — the first on-glasses glyphs
+      (`text_raster`, minimal bitmap-digit font).
+- [ ] User review of the reconciled + extended spec.
 - [ ] Implementation plan (writing-plans) — TDD, tasks.
-- [ ] Implement: WindowBackend → per-source renderer → scene source_index →
-      config keys → `Ctrl+Alt+W` handler + spawn → Makefile → telemetry.
+- [ ] Implement: WindowBackend → per-source renderer (+label texture) → scene
+      source_index + resize size-scale → config keys → `Ctrl+Alt+W` handler +
+      spawn → text_raster + active-screen label quad → Makefile → telemetry.
 - [ ] Build green + unit tests + X-gated component test.
 - [ ] Hardware pass on glasses.
 - [ ] Merge to `main` (FF) when finalized.

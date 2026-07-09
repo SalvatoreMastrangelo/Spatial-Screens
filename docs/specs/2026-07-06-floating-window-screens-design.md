@@ -12,7 +12,7 @@ Branch: `feat/floating-window-screens`
 > one active at a time) and the renderer is **single-texture / single-descriptor-
 > set**. This revision reconciles the architecture to the code as it actually
 > stands on `main` (HEAD `f38058d`), and — per the 2026-07-09 scope decision —
-> **keeps runtime spawn in v1** (append-only; see §Runtime spawn). Interaction
+> **keeps runtime spawn in v1** (append-only; see Components §4). Interaction
 > model is unchanged: **`Ctrl+Alt+W` grab-focused-window** onto the active screen.
 > Grounded against: `capture.h:12-39`, `capture_xshm.cpp`, `vk_renderer.{h,cpp}`,
 > `scene.{h,cpp}`, `main.cpp` (hotkeys `425-441/721-760`, backend chain
@@ -61,6 +61,15 @@ new floating screen in front of you.
 - **Grab focused window**: `Ctrl+Alt+W` reads `_NET_ACTIVE_WINDOW` and binds it to
   the active screen — or spawns a new floating screen in front if none is active.
 - Correct **aspect** from the window's geometry.
+- **Native-resolution "definition":** a window screen's texture is always the
+  window's exact pixel dimensions (X×Y). Hand-resize only **magnifies** that
+  fixed-resolution texture — it never changes definition. See §Sizing.
+- **Resize follows:** resizing the source window on the desktop re-sizes the
+  floating panel proportionally **at the same aspect ratio** (and re-creates the
+  texture at the new native resolution). See §Sizing.
+- **Active-screen resolution label:** the selected screen shows its native `X×Y`
+  pixel count as a small label **just outside** the panel border (the first
+  on-glasses glyph rendering). See Components §6.
 - Graceful handling of window **resize / unmap / close** (never crash on a
   vanished window; a closed window's screen reverts to a placeholder).
 - Declarative config so a window screen can be set up without runtime interaction
@@ -207,7 +216,8 @@ std::unique_ptr<CaptureBackend> capture_create_window(Window win, int hz);
 - Replace the scalar `tex/tex_mem/tex_view/tex_w/h/pitch` + `staging*` +
   `tex_dirty` + single `dset` with a fixed `Source src_[N]` (N=8), each holding
   its own image/view/memory, mapped staging buffer, dirty flag, and descriptor
-  set. Pool `maxSets = N`; write each source's view into its own set.
+  set. Pool `maxSets = N + 1` (the `+1` is the §6 label descriptor); write each
+  source's view into its own set.
 - New API:
   - `void vkr_set_source_size(VkRend*, int idx, int w, int h, uint32_t pitch)` —
     lazily (re)create slot `idx`'s image + staging at the source's dimensions
@@ -274,13 +284,63 @@ std::unique_ptr<CaptureBackend> capture_create_window(Window win, int hz);
   screen as a placeholder. Keeps the "config declarative, state app-written"
   split intact.
 
+### 6. Active-screen resolution label — `spatial-screens/src/text_raster.{h,cpp}` (new) + renderer + main
+
+The **first on-glasses glyph rendering** (today `main.cpp:1286` notes "the HUD has
+no glyphs" — the HUD is only bars + circle dots). Shows the active window screen's
+**native pixel count** `W×H` as a small label just outside its panel border, and
+**only** for the currently-selected screen (`active_screen`) when that screen is a
+window source. Kept minimal:
+
+- **`text_raster` (pure, unit-testable):** a hardcoded minimal bitmap font for
+  `0-9` and `×` (e.g. 5×7 glyphs baked into the header, like the `.spv.h`
+  shaders) → `rasterize("1920×1080") → BGRX buffer + w/h`. No font-library
+  dependency (matches the project's no-creep style). Re-rasterized only when the
+  active screen's resolution or identity changes, not per frame.
+- **Renderer:** one dedicated **label texture + descriptor** reserved at index `N`
+  (the source array is `0..N-1`; the label is a separate small dynamic texture, so
+  it does not consume a window slot). Uploaded via the same staging path.
+- **Placement (main):** a single textured quad, **co-planar** with the panel, just
+  below its bottom edge, sized to a small fixed height (width from the label
+  texture aspect). Reuses the exact panel-frame basis the green border bars
+  already compute (`main.cpp:1220-1235`), so the label rotates/faces with the
+  panel (readable once the active screen is head-anchored-faced). Emitted into the
+  same per-eye draw list, gated on `active_screen ≥ 0 && screen is a window
+  source`. Bump the fixed `QuadDraw draws[2][72]` cap (`main.cpp:1155`) by one if
+  needed (it is one quad).
+
+## Sizing, resolution & definition
+
+- **Definition = native resolution.** A window source's texture is created at the
+  window's **exact** pixel dimensions via `vkr_set_source_size(idx, w, h, pitch)`,
+  and re-created at the new dimensions on every resize. The panel therefore always
+  renders the window at its true X×Y "definition"; hand-resize is pure
+  magnification of that fixed-resolution texture and never changes it. (Cost: a
+  4K window is a 3840×2160 texture copied each `--capture-hz` tick — bounded by the
+  slot cap; note in telemetry.)
+- **Physical size (chosen: hand-set, resize-scaled — Option 1).** The panel's
+  physical diagonal is `ScreenCfg.size` (inches), set by the two-hand grab gesture
+  exactly as today; `aspect = window_w / window_h`, updated on resize. When the
+  **source window is resized**, scale the diagonal by the pixel-diagonal ratio —
+  `size *= sqrt(new_w²+new_h²) / sqrt(old_w²+old_h²)` — and update `aspect`, so the
+  floating panel visibly follows the desktop resize **at the same aspect ratio**.
+  Initial size on grab/spawn = the global default. This reuses `cfg.size` and the
+  existing gesture path with **no branching** (gesture and resize both nudge the
+  same `cfg.size`, at different moments — no conflict). The angular-DPI model
+  (size derived from pixel count × a zoom factor) is a documented Future idea.
+- **Label reflects definition, not physical size:** the §6 label always shows the
+  native `W×H` pixel count, independent of how large the panel is magnified.
+
 ## Data flow / lifecycle
 
 - **Grab / spawn** → slot allocated → `WindowBackend` started → next frames:
   `latest_frame` → (resize? `vkr_set_source_size`) → `vkr_upload_source` → the
   screen shows the window.
 - **Resize** → `StructureNotify` → re-name pixmap, re-alloc SHM slot, report new
-  `w/h` → renderer resizes the source texture → `aspect` updates.
+  `w/h` → `vkr_set_source_size` re-creates the texture at native res → `aspect`
+  updates → `cfg.size` scales by the pixel-diagonal ratio (panel follows the
+  resize, same aspect) → if this is the active screen, the §6 label re-rasterizes
+  to the new `W×H`.
 - **Unmap** (minimized) → `grab` stale → screen shows its last frame frozen
   (documented) until remapped.
 - **Destroy / close** → backend reports dead → owner `stop()`s it, frees the slot,
@@ -316,20 +376,32 @@ std::unique_ptr<CaptureBackend> capture_create_window(Window win, int hz);
   `source_index≥1` with full-frame UV while monitor screens keep `source_index=0`
   + sub-rect UV; aspect derives from window geometry; slot-cap refusal;
   placeholder (`source_index<0`) selects the untextured path; spawn appends
-  without disturbing existing indices or `active_screen`.
+  without disturbing existing indices or `active_screen`; **resize scales
+  `cfg.size` by the pixel-diagonal ratio and preserves aspect**.
+- **`text_raster` unit:** `rasterize("1920×1080")` yields a buffer of the expected
+  dimensions; each digit/`×` glyph blits at the right offset; unknown chars are
+  skipped; the label texture aspect matches the string.
 - **Component (X-display-gated, like the existing XShm tests):** `WindowBackend`
   against a throwaway mapped X window — redirect, grab a known-size pixmap, assert
   buffer dims/aspect; resize → re-name → new dims; destroy → stale/dead handling.
 - **Hardware pass:** `Ctrl+Alt+W` grabs the focused window onto the active screen;
   with no selection it spawns a faced floating screen; move/scale/face it
-  (selection + head-anchored features); resize the source app and confirm the
-  screen follows; close it and confirm a clean placeholder revert (no crash); a
-  config `window-match` screen resolves at launch.
+  (selection + head-anchored features); **resize the source app and confirm the
+  panel follows proportionally at the same aspect**; **the active screen shows its
+  native `W×H` just outside the border, and it updates on resize / de-selection**;
+  close it and confirm a clean placeholder revert (no crash); a config
+  `window-match` screen resolves at launch.
 
 ## Future ideas (documented, not built)
 
+- **Angular-DPI size model** — derive the panel's physical size from pixel count ×
+  a zoom factor (consistent pixel density in view; higher-res windows larger at
+  the same zoom), with the gesture adjusting the zoom, instead of v1's hand-set
+  diagonal. (Deferred 2026-07-09 in favor of the lighter Option 1.)
 - **Zero-copy capture** via dmabuf + Vulkan external-memory import (drops the CPU
   copy per window) — the real perf path once v1 proves the UX.
+- **Richer on-glasses text** — the §6 bitmap-digit font is intentionally minimal
+  (`0-9`, `×`); a fuller glyph set would enable window titles / labels.
 - **Xdamage-driven grabs** — only re-grab a window when its contents change.
 - **Runtime screen removal / compaction** — actually splice a screen out of
   `scene` (needs `active_screen` re-indexing across all gesture/hotkey paths).
@@ -349,15 +421,20 @@ std::unique_ptr<CaptureBackend> capture_create_window(Window win, int hz);
 - `spatial-screens/src/capture_xshm.cpp` — (only if extracting) route through the
   shared `shm_image` helper; behavior unchanged.
 - `spatial-screens/src/vk_renderer.{h,cpp}` — per-source texture/staging/dset
-  array (N=8); `vkr_set_source_size` / `vkr_upload_source`; `source_index` on
-  `QuadDraw`; per-draw descriptor bind.
+  array (N=8) + one reserved label texture/descriptor (index N);
+  `vkr_set_source_size` / `vkr_upload_source`; `source_index` on `QuadDraw`;
+  per-draw descriptor bind.
 - `spatial-screens/src/scene.{h,cpp}` — `source_index` on `ScreenInst`; window
-  screens = full-frame UV; placeholder path.
+  screens = full-frame UV; placeholder path; resize scales `cfg.size` by the
+  pixel-diagonal ratio (pure helper, unit-tested).
+- `spatial-screens/src/text_raster.{h,cpp}` (new) — pure bitmap-digit
+  rasterizer (`0-9`, `×`) → BGRX buffer for the active-screen label.
 - `spatial-screens/src/config.{h,cpp}` — `source` / `window_match` keys +
   startup resolution.
 - `spatial-screens/src/main.cpp` — `Ctrl+Alt+W` handler; slot allocator; assign-
   to-active + append-only spawn; per-frame window-source pump + death teardown;
-  telemetry source count.
+  resize → size-scale + label re-raster; active-screen label quad (co-planar,
+  outside the border); telemetry source count.
 - `spatial-screens/src/telemetry.*` — window-source count in the panel.
 - `spatial-screens/Makefile` — link `-lXcomposite`; new `capture_window` object.
 - `docs/specs/2026-07-06-floating-window-screens-design.md` — this document.
