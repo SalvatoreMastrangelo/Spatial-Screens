@@ -55,10 +55,12 @@ static void test_config_keys() {
     CHECK(!set_option(o2, "screen.17.monitor", "x"));
     CHECK(o2.screens.empty());
 
-    // Prediction options (vsync-timed pose prediction).
+    // Prediction options. Defaults ship the hardware-tuned smoothvel tuple
+    // (predict from a de-noised angular velocity; see predict_math.h).
     Options p;
-    CHECK(p.predict_mode == "vsync");                 // default: on
-    CHECK(std::fabs(p.scanout_ms - 5.f) < 1e-6f);
+    CHECK(p.predict_mode == "smoothvel");             // default: on, ships the win
+    CHECK(std::fabs(p.scanout_ms - 14.f) < 1e-6f);
+    CHECK(std::fabs(p.vel_cutoff - 11.f) < 1e-6f);
     CHECK(std::fabs(p.predict_cap_ms - 35.f) < 1e-6f);
     CHECK(set_option(p, "predict-mode", "off"));
     CHECK(p.predict_mode == "off");
