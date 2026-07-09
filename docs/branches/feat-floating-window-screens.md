@@ -17,6 +17,12 @@ renderer; scope decision: **runtime spawn kept in v1, append-only**).
 ## State
 
 - [x] Worktree created off `main` (not stale `origin/main`, which is 34 behind).
+- [x] **Rebased onto current `main` `5a41307` (2026-07-10)** after the vsync/predict
+      feature landed (was 16 behind). Docs-only rebase, zero conflicts. Plan
+      landmarks re-verified present, shifted line #s only: config whitelist
+      `config.cpp:105`, `hot[]` `main.cpp:471`, renderer bind `vk_renderer.cpp:559`,
+      `VK_LIBS` `Makefile:6`. Locate insertion points by pattern, not the plan's
+      stale absolute line numbers (predict added `main.cpp` +216/−70 above them).
 - [x] Precondition check: `libXcomposite-dev` + runtime `Composite` present; X11
       session; `libXdamage`/`libXfixes` present. `-lXcomposite` not yet linked.
 - [x] Design freshness pass complete + committed.
