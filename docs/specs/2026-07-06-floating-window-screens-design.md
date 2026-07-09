@@ -70,6 +70,10 @@ new floating screen in front of you.
 - **Active-screen resolution label:** the selected screen shows its native `X×Y`
   pixel count as a small label **just outside** the panel border (the first
   on-glasses glyph rendering). See Components §6.
+- **Persistent floating-window frame:** every floating-window panel always shows a
+  thin **gray/white border** (like the green selection border), so it reads as a
+  distinct panel; the border turns **green while that panel is the active screen**.
+  Monitor-rack screens are unaffected. See Components §7.
 - Graceful handling of window **resize / unmap / close** (never crash on a
   vanished window; a closed window's screen reverts to a placeholder).
 - Declarative config so a window screen can be set up without runtime interaction
@@ -306,8 +310,29 @@ window source. Kept minimal:
   already compute (`main.cpp:1220-1235`), so the label rotates/faces with the
   panel (readable once the active screen is head-anchored-faced). Emitted into the
   same per-eye draw list, gated on `active_screen ≥ 0 && screen is a window
-  source`. Bump the fixed `QuadDraw draws[2][72]` cap (`main.cpp:1155`) by one if
-  needed (it is one quad).
+  source`. (Draw-list cap: see §7.)
+
+### 7. Persistent floating-window frame — `spatial-screens/src/main.cpp`
+
+A thin border drawn around **every** floating-window panel (any screen with
+`source_index != 0` — live windows *and* dead placeholders; monitor-rack screens
+excluded), so a floating window always reads as a distinct panel. It reuses the
+**exact 4-bar geometry the green selection border already builds**
+(`main.cpp:1220-1235`) — only the gating and color change:
+
+- **Color:** **green** when the panel is the active screen (`active_screen`
+  selection wins), **gray/white** otherwise. A new `WINDOW_BORDER_M` thickness
+  constant (near `SELECT_BORDER_M`, `main.cpp:108`) and a gray/white color, both
+  hardware-tunable like the green was.
+- **Generalize the border pass:** today the 4 bars are emitted only for
+  `active_screen`. Extend to iterate **all** screens: emit the frame for the
+  active screen (green) **and** every non-active floating-window screen
+  (gray/white). Monitor screens keep today's behavior (green only when active,
+  no persistent frame).
+- **Draw-list cap.** The fixed `QuadDraw draws[2][72]` (`main.cpp:1155`) must grow
+  to cover, per eye: the screen quads + **4 border bars × every floating-window
+  screen** (≤ 4×7 = 28) + the §6 label quad + the existing VO/hand dots. Raise the
+  constant accordingly (≈ 112) — a compile-time bound, no allocation.
 
 ## Sizing, resolution & definition
 
@@ -387,10 +412,11 @@ window source. Kept minimal:
 - **Hardware pass:** `Ctrl+Alt+W` grabs the focused window onto the active screen;
   with no selection it spawns a faced floating screen; move/scale/face it
   (selection + head-anchored features); **resize the source app and confirm the
-  panel follows proportionally at the same aspect**; **the active screen shows its
-  native `W×H` just outside the border, and it updates on resize / de-selection**;
-  close it and confirm a clean placeholder revert (no crash); a config
-  `window-match` screen resolves at launch.
+  panel follows proportionally at the same aspect**; **every floating window shows
+  a thin gray/white frame that turns green while selected** (monitor screens
+  unframed); **the active screen shows its native `W×H` just outside the border,
+  and it updates on resize / de-selection**; close it and confirm a clean
+  placeholder revert (no crash); a config `window-match` screen resolves at launch.
 
 ## Future ideas (documented, not built)
 
@@ -434,7 +460,8 @@ window source. Kept minimal:
 - `spatial-screens/src/main.cpp` — `Ctrl+Alt+W` handler; slot allocator; assign-
   to-active + append-only spawn; per-frame window-source pump + death teardown;
   resize → size-scale + label re-raster; active-screen label quad (co-planar,
-  outside the border); telemetry source count.
+  outside the border); persistent per-window frame (gray/white, green when active)
+  + `WINDOW_BORDER_M`; raised draw-list cap; telemetry source count.
 - `spatial-screens/src/telemetry.*` — window-source count in the panel.
 - `spatial-screens/Makefile` — link `-lXcomposite`; new `capture_window` object.
 - `docs/specs/2026-07-06-floating-window-screens-design.md` — this document.

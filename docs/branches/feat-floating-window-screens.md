@@ -24,7 +24,9 @@ renderer; scope decision: **runtime spawn kept in v1, append-only**).
       source-window resize scales panel size proportionally at same aspect
       (size model Option 1; angular-DPI → future); **active-screen-only X×Y
       label rendered just outside the panel** — the first on-glasses glyphs
-      (`text_raster`, minimal bitmap-digit font).
+      (`text_raster`, minimal bitmap-digit font); **persistent thin frame on
+      all floating-window panels (gray/white, green while selected)**, reusing
+      the green-border 4-bar geometry — monitor screens unframed.
 - [ ] User review of the reconciled + extended spec.
 - [ ] Implementation plan (writing-plans) — TDD, tasks.
 - [ ] Implement: WindowBackend → per-source renderer (+label texture) → scene
