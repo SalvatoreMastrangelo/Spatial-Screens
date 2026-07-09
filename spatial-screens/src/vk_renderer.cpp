@@ -484,20 +484,31 @@ static void record_quads(VkCommandBuffer cb, VkRend& r, const QuadDraw* draws, i
     }
 }
 
-// lists[0] = left/full, lists[1] = right (nullptr => mono full-viewport).
-static bool draw_impl(VkRend& r, const QuadDraw* const lists[2], const int counts[2]) {
+// Fence wait + acquire (the vblank-paced block). On success frame_open is set
+// and the image index stashed; caller must follow with exactly one submit.
+bool vkr_begin_frame(VkRend& r) {
     if (!r.swapchain) return false;
     if (vkWaitForFences(r.device, 1, &r.fence[r.frame], VK_TRUE, 2000000000ull) != VK_SUCCESS)
         return false;  // wedged or lost device: let the caller bail to teardown
-    uint32_t img = 0;
     VkResult res = vkAcquireNextImageKHR(r.device, r.swapchain, UINT64_MAX,
-                                         r.sem_acquire[r.frame], VK_NULL_HANDLE, &img);
+                                         r.sem_acquire[r.frame], VK_NULL_HANDLE, &r.cur_img);
     if (res == VK_ERROR_OUT_OF_DATE_KHR) { vkr_init_swapchain(r); return false; }
     if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
         fprintf(stderr, "vulkan: acquire failed (%d)\n", res);
         return false;
     }
     vkResetFences(r.device, 1, &r.fence[r.frame]);
+    r.frame_open = true;
+    return true;
+}
+
+// Record + submit + present the image acquired by vkr_begin_frame.
+// lists[0] = left/full, lists[1] = right (nullptr => mono full-viewport).
+static bool submit_impl(VkRend& r, const QuadDraw* const lists[2], const int counts[2]) {
+    if (!r.frame_open) return false;
+    r.frame_open = false;
+    uint32_t img = r.cur_img;
+    VkResult res = VK_SUCCESS;
 
     VkCommandBuffer cb = r.cmd[r.frame];
     vkResetCommandBuffer(cb, 0);
@@ -595,6 +606,19 @@ static bool draw_impl(VkRend& r, const QuadDraw* const lists[2], const int count
         vkr_init_swapchain(r);
     r.frame = (r.frame + 1) % VkRend::FRAMES;
     return true;
+}
+
+// Non-reprojection path: acquire immediately, then submit (today's behavior).
+static bool draw_impl(VkRend& r, const QuadDraw* const lists[2], const int counts[2]) {
+    if (!vkr_begin_frame(r)) return false;
+    return submit_impl(r, lists, counts);
+}
+
+bool vkr_submit_stereo(VkRend& r, const QuadDraw* left, int nleft,
+                       const QuadDraw* right, int nright) {
+    const QuadDraw* lists[2] = {left, right};
+    const int counts[2] = {nleft, nright};
+    return submit_impl(r, lists, counts);
 }
 
 bool vkr_draw(VkRend& r, const QuadDraw* draws, int n) {

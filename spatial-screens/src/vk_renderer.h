@@ -55,6 +55,8 @@ struct VkRend {
     VkSemaphore sem_acquire[FRAMES] = {};
     VkFence fence[FRAMES] = {};
     int frame = 0;
+    uint32_t cur_img = 0;      // image acquired by vkr_begin_frame, consumed by vkr_submit_stereo
+    bool frame_open = false;   // a begin_frame awaits its submit (late-latch reprojection)
 };
 
 bool vkr_create_instance(VkRend& r, bool want_direct);
@@ -75,6 +77,17 @@ bool vkr_draw(VkRend& r, const QuadDraw* draws, int n);
 // list silently downgrades to the single-viewport mono path.
 bool vkr_draw_stereo(VkRend& r, const QuadDraw* left, int nleft,
                      const QuadDraw* right, int nright);
+
+// Late-latch reprojection: split of the draw into acquire and submit so the
+// caller can sample the head pose AFTER the (vblank-paced) acquire returns.
+// vkr_begin_frame does the fence wait + vkAcquireNextImageKHR (blocks); on
+// success frame_open is set and the caller MUST follow with exactly one
+// vkr_submit_stereo (same frame index) — do not `continue`/bail between them
+// or the acquired image wedges. vkr_draw/vkr_draw_stereo remain begin+submit
+// wrappers for the non-reprojection path. right may be null (mono).
+bool vkr_begin_frame(VkRend& r);
+bool vkr_submit_stereo(VkRend& r, const QuadDraw* left, int nleft,
+                       const QuadDraw* right, int nright);
 void vkr_destroy(VkRend& r);
 
 // Device-level teardown only (waits idle; destroys swapchain, pipeline,

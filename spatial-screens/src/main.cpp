@@ -305,6 +305,7 @@ int main(int argc, char** argv) {
     bool fusion = true;
     bool both_cam = true;
     bool gestures_enabled = true;   // --no-gestures skips the sidecar (fps A/B: isolates iGPU contention)
+    bool reproject = false;         // --reproject: late-latch (acquire before pose sample), cuts FIFO-wait latency
     std::string gesture_enhance = "gamma_clahe";
     float gesture_enhance_gamma = 0.45f, gesture_enhance_clahe_clip = 3.0f;
     for (int i = 1; i < argc; i++) {
@@ -314,6 +315,7 @@ int main(int argc, char** argv) {
         if (!strcmp(a, "--no-fusion")) { fusion = false; continue; }
         if (!strcmp(a, "--no-both-cam")) { both_cam = false; continue; }
         if (!strcmp(a, "--no-gestures")) { gestures_enabled = false; continue; }
+        if (!strcmp(a, "--reproject")) { reproject = true; continue; }
         if (!strcmp(a, "--enhance") && i + 1 < argc) { gesture_enhance = argv[++i]; continue; }
         if (!strcmp(a, "--enhance-gamma") && i + 1 < argc) { gesture_enhance_gamma = atof(argv[++i]); continue; }
         if (!strcmp(a, "--enhance-clahe-clip") && i + 1 < argc) { gesture_enhance_clahe_clip = atof(argv[++i]); continue; }
@@ -339,6 +341,7 @@ int main(int argc, char** argv) {
                    "  --fusion      force-enable stereo depth fusion (default)\n"
                    "  --no-both-cam disable both-camera tracking union (fusion feeds depth only)\n"
                    "  --no-gestures skip the MediaPipe gesture sidecar entirely (fps A/B)\n"
+                   "  --reproject   late-latch: sample head pose AFTER the vblank-paced acquire (lower latency)\n"
                    "  --enhance     hand-frame brightening: none|gamma|clahe|gamma_clahe (default gamma_clahe)\n"
                    "config: %s   state: %s\n",
                    argv[0], config_default_path().c_str(), state_file_path().c_str());
@@ -1124,6 +1127,14 @@ int main(int argc, char** argv) {
         if (vk.extent.width != known_extent.width || vk.extent.height != known_extent.height)
             refresh_projection();
 
+        // Late-latch reprojection: acquire the swapchain image (blocks ~to the
+        // next vblank) BEFORE sampling the head pose, so the presented frame's
+        // pose is sampled ACROSS the FIFO wait instead of predicted across it.
+        // On success this MUST be followed by exactly one vkr_submit_stereo with
+        // no continue/return between (verified none exists down to the draw).
+        bool frame_began = false;
+        if (reproject) frame_began = vkr_begin_frame(vk);
+
         // ---- pose (predicted, then smoothed)
         // Real per-frame sample period for the One-Euro filter (and, later,
         // prediction). Clamped so a stall or a burst can't destabilize alpha.
@@ -1471,9 +1482,16 @@ int main(int argc, char** argv) {
         static int rebuilds_without_present = 0;
         // Stereo passes both stack lists (draws[1] is non-null even when
         // empty — a null right list would silently downgrade to mono).
-        bool drew = stereo_active
-            ? vkr_draw_stereo(vk, draws[0], ndraw[0], draws[1], ndraw[1])
-            : vkr_draw(vk, draws[0], ndraw[0]);
+        // reproject: submit the image acquired before the pose block (frame_began);
+        // a failed acquire falls through as drew=false into the rebuild path below.
+        // Non-reproject: acquire+submit together here, exactly as before.
+        bool drew = reproject
+            ? (frame_began && (stereo_active
+                ? vkr_submit_stereo(vk, draws[0], ndraw[0], draws[1], ndraw[1])
+                : vkr_submit_stereo(vk, draws[0], ndraw[0], nullptr, 0)))
+            : (stereo_active
+                ? vkr_draw_stereo(vk, draws[0], ndraw[0], draws[1], ndraw[1])
+                : vkr_draw(vk, draws[0], ndraw[0]));
         if (drew) {
             draw_fail = 0;
             rebuilds_without_present = 0;
