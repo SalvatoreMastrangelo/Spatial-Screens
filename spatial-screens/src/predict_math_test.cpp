@@ -46,10 +46,9 @@ static void test_compute_predict_s() {
     CHECK(compute_predict_s(1.0, 0.0, interval, scan, cap) < 0.0);
     // No interval -> sentinel.
     CHECK(compute_predict_s(0.005, 0.0, 0.0, scan, cap) < 0.0);
-    // A legitimate 0 is possible and is NOT the sentinel: now exactly at a vblank
-    // with zero scanout predicts to the next whole interval, so use scan=0 and
-    // now just before a vblank to get a tiny positive — assert non-negative here.
-    CHECK(compute_predict_s(0.005, 0.0, interval, 0.0, cap) >= 0.0);
+    // A legitimate 0 is reachable and distinct from the -1 sentinel: a negative
+    // scanout drives target negative, which the lower clamp pins to exactly 0.0.
+    CHECK(compute_predict_s(0.005, 0.0, interval, -1.0, cap) == 0.0);
 }
 
 static void test_predict_gate() {
@@ -60,6 +59,11 @@ static void test_predict_gate() {
     // Monotonic in the middle.
     float mid = predict_gate(0.0f, 12.f, 0.03f, 0.3f, 2.f, 20.f);
     CHECK(mid > 0.f && mid < 1.f);
+    // Actually monotonic increasing in angular speed across the ramp.
+    CHECK(predict_gate(0.0f, 8.f,  0.03f, 0.3f, 2.f, 20.f) <
+          predict_gate(0.0f, 12.f, 0.03f, 0.3f, 2.f, 20.f));
+    CHECK(predict_gate(0.0f, 12.f, 0.03f, 0.3f, 2.f, 20.f) <
+          predict_gate(0.0f, 16.f, 0.03f, 0.3f, 2.f, 20.f));
 }
 
 int main() {
