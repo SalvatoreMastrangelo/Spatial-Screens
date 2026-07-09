@@ -27,11 +27,15 @@ renderer; scope decision: **runtime spawn kept in v1, append-only**).
       (`text_raster`, minimal bitmap-digit font); **persistent thin frame on
       all floating-window panels (gray/white, green while selected)**, reusing
       the green-border 4-bar geometry — monitor screens unframed.
-- [ ] User review of the reconciled + extended spec.
-- [ ] Implementation plan (writing-plans) — TDD, tasks.
-- [ ] Implement: WindowBackend → per-source renderer (+label texture) → scene
-      source_index + resize size-scale → config keys → `Ctrl+Alt+W` handler +
-      spawn → text_raster + active-screen label quad → Makefile → telemetry.
+- [x] User review of the reconciled + extended spec (approved; +additions).
+- [x] Implementation plan (writing-plans) — TDD, 14 tasks. See
+      [`docs/specs/2026-07-06-floating-window-screens-plan.md`](../specs/2026-07-06-floating-window-screens-plan.md).
+- [ ] Implement (subagent-driven, task-by-task):
+      T1 config keys · T2 scene source_index + resize helper · T3 slot allocator ·
+      T4 text_raster · T5 WindowBackend · T6a/b per-source renderer ·
+      T7 window-source pump · T8 `Ctrl+Alt+W`+spawn · T9 config resolve ·
+      T10 label quad · T11 per-window frame · T12 telemetry · T13 green build ·
+      T14 hardware pass.
 - [ ] Build green + unit tests + X-gated component test.
 - [ ] Hardware pass on glasses.
 - [ ] Merge to `main` (FF) when finalized.
