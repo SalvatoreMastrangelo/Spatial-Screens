@@ -1,6 +1,6 @@
 # feat/vsync-pose-predict — branch record
 
-**Status: IMPLEMENTATION COMPLETE, reviewed clean. PENDING the on-glasses tuning campaign (Task 7).** Worktree at `.claude/worktrees/vsync-pose-predict`, based on `main` @ `f38058d`.
+**Status: IMPLEMENTATION COMPLETE + reviewed clean. TUNING CAMPAIGN IN PROGRESS — day 1 done 2026-07-09; RESUME tomorrow.** Worktree at `.claude/worktrees/vsync-pose-predict`, based on `main` @ `f38058d`. Not merged.
 
 ## What it does
 
@@ -60,7 +60,61 @@ Commits (on `feat/vsync-pose-predict`, base `f38058d`):
   opus) — all Approved, 0 Critical/Important. Whole-branch review (opus):
   **Ready to merge with fixes**, 0 Critical, 0 correctness defects; the one
   pre-hardware fix (.gitignore) + two test-assert nits applied in `ab0d6b3`.
-- **Hardware pass 2026-07-09: PENDING** — the Task 7 tuning campaign below.
+- **Hardware pass 2026-07-09: IN PROGRESS** — tuning campaign day 1, see below.
+
+## Tuning campaign — day 1 (2026-07-09)
+
+Ran on the glasses (1920×1200@90, 2×2 stereo workspace). Runs launched from the
+worktree via `./run.sh <flags>`; diagnostic status line reports
+`predict Xms  dt mean/p95/max  vsync ok|ABSENT`.
+
+**Findings:**
+- **VSync FIRES under the leased direct-mode display** — `vsync ok`, interval
+  converges to ~11.1 ms = exactly 90 Hz. The big unknown is resolved *positively*:
+  the fallback path is not needed on this hardware. Approach B is viable at the
+  clock level.
+- **Frame pacing:** at rest ~78–80 fps (dt mean ~12.8–13.3 ms) but **p95 ~28 ms,
+  max 33.3 ms** — ~5–10% of frames span 2–3 vblank periods (FIFO cliff; baseline
+  already sits just over one 11.1 ms vblank). Prediction is **nearly free**
+  per-frame: at rest, `vsync` mode holds the same ~80 fps as `off`. The fps drop
+  seen mid-turn (~55–65) was the **head-motion + FIFO-cliff confound**, NOT
+  prediction compute cost.
+- **Perceptual A/B (user eyes-on):**
+  - `--predict-mode off` (= late-sample + dt-fix, no prediction): **"good, but a
+    bit of that wiggle."** A real, liked improvement.
+  - `--predict-mode vsync --scanout-ms 5` (cap 35): **"laggy, crunchy, violent
+    zigzag."** Clear net-negative.
+  - `--predict-mode vsync --scanout-ms 0 --predict-cap-ms 6` (gentle): **"better,
+    but still jittery."** Reduced amplitude, jitter character remains.
+
+**Interpretation:** the win so far is the **late-sample + dt-fix** baseline. The
+**SDK's own forward-extrapolation** (`get_gl_pose_carina(predict_time)`) is too
+noisy to use directly — predicting a noisy velocity zigzags, and our One-Euro
+filter goes near-transparent during motion (by design, to stay snappy) exactly
+when prediction is active, so it can't damp the residual. Reducing the horizon
+(scanout/cap) lowers the amplitude but not the jitter character.
+
+**Next session — options to try (roughly in order):**
+1. **Don't amplify SDK velocity noise.** Try predicting from a *smoothed* velocity
+   instead of the SDK's raw prediction: keep the anchor pose filtered and apply a
+   low-passed forward-extrapolation ourselves (the deferred design option (ii) /
+   the cheap end of Approach C). This is the most promising direction — it
+   targets the root cause (noise amplification) rather than the magnitude.
+2. **Split position vs orientation prediction.** Orientation is the visible
+   zigzag channel for distant screens; try predicting position only, or filtering
+   the *predicted* orientation harder during motion.
+3. **Even gentler / fractional prediction** (predict only a fraction of the
+   horizon) to find any sweet spot — low expectation given the trend.
+4. **If none clean up the jitter:** ship the win — flip default to
+   `--predict-mode off` (keep vsync as experimental), merging the late-sample +
+   dt-fix improvement the user liked; pursue smoothed extrapolation (Approach C)
+   as a separate follow-up branch.
+
+**State for resume:** all code committed on `feat/vsync-pose-predict` (HEAD after
+this doc commit). Worktree intact; SDK symlinked (`sdk/include`,`sdk/lib` →
+main checkout, git-excluded). Rebuild with `cd spatial-screens && make`; relaunch
+with `./run.sh --predict-mode <off|vsync> [--scanout-ms N] [--predict-cap-ms N]`.
+`main` untouched at `f38058d`.
 
 ## Hardware-pass watch items (from the whole-branch review)
 
