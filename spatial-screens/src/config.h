@@ -35,6 +35,10 @@ struct Options {
     std::string predict_mode = "vsync";   // off|fixed|vsync (head-pose prediction)
     float scanout_ms = 5.f;               // extra sample-to-photon term (vsync mode)
     float predict_cap_ms = 35.f;          // clamp on the prediction horizon
+    float predict_scale = 1.f;            // [0,1] fraction of the gated horizon actually applied
+    float ang_dead = 2.f;                 // predict-gate angular deadband (deg/frame)
+    float ang_ramp = 20.f;                // predict-gate angular ramp (deg/frame)
+    float ori_motion_cap = 0.95f;         // orientation filter transparency ceiling during motion
     float smooth_pos = 0.10f;
     float smooth_ori = 0.40f;
     bool window = false;

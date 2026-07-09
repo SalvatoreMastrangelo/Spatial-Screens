@@ -327,6 +327,7 @@ int main(int argc, char** argv) {
                    "[--capture-backend auto|portal|xshm|test] [--capture-hz N] [--distance M] "
                    "[--size IN] [--pitch-trim DEG] [--predict-ms MS] "
                    "[--predict-mode off|fixed|vsync] [--scanout-ms MS] [--predict-cap-ms MS] "
+                   "[--predict-scale 0..1] [--ang-dead DEG] [--ang-ramp DEG] [--ori-motion-cap 0..1] "
                    "[--smooth-pos 0..1] "
                    "[--smooth-ori 0..1] [--ws-port N] [--window] [--config PATH] "
                    "[--dump-config] [--probe-camera] [--no-fusion] [--fusion] "
@@ -350,6 +351,8 @@ int main(int argc, char** argv) {
                o.distance, o.size, o.pitch_trim, o.predict_ms);
         printf("predict-mode = %s\nscanout-ms = %.2f\npredict-cap-ms = %.2f\n",
                o.predict_mode.c_str(), o.scanout_ms, o.predict_cap_ms);
+        printf("predict-scale = %.2f\nang-dead = %.2f\nang-ramp = %.2f\nori-motion-cap = %.2f\n",
+               o.predict_scale, o.ang_dead, o.ang_ramp, o.ori_motion_cap);
         printf("smooth-pos = %.2f\nsmooth-ori = %.2f\nwindow = %s\nws-port = %d\n",
                o.smooth_pos, o.smooth_ori, o.window ? "true" : "false", o.ws_port);
         printf("stereo = %s\nipd-mm = %.1f\nworkspace = %s\nscreens = %zu configured\n",
@@ -366,6 +369,8 @@ int main(int argc, char** argv) {
     float predict_ms = o.predict_ms, smooth_pos = o.smooth_pos, smooth_ori = o.smooth_ori;
     std::string predict_mode = o.predict_mode;
     float scanout_ms = o.scanout_ms, predict_cap_ms = o.predict_cap_ms;
+    float predict_scale = o.predict_scale, ang_dead = o.ang_dead, ang_ramp = o.ang_ramp;
+    float ori_motion_cap = o.ori_motion_cap;
     bool force_window = o.window;
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
@@ -1124,7 +1129,7 @@ int main(int argc, char** argv) {
         // it to the next scanout; fixed uses the configured predict-ms; off = 0.
         float gate = predict_gate(speed_hat, ang_speed_hat,
                                   /*lin_dead*/0.03f, /*lin_ramp*/0.30f,
-                                  /*ang_dead*/2.0f,  /*ang_ramp*/20.0f);
+                                  ang_dead, ang_ramp);
         double predict_s = 0.0;
         if (predict_mode != "off") {
             double cap_s = predict_cap_ms * 1e-3;
@@ -1138,7 +1143,7 @@ int main(int argc, char** argv) {
             } else { // "fixed"
                 predict_s = std::min(double(predict_ms) * 1e-3, cap_s);
             }
-            predict_s *= gate;
+            predict_s *= gate * predict_scale;
         }
         g_last_predict_ms = float(predict_s * 1e3);
 
@@ -1180,7 +1185,7 @@ int main(int argc, char** argv) {
                 ang_speed_hat += (ang - ang_speed_hat) * 0.3f;   // deg/frame EMA
                 // Velocity term dominates quickly: shimmer-damping at rest,
                 // near-raw tracking as soon as the head actually turns.
-                float a = std::min(0.95f, smooth_ori * 0.25f + ang * 1.2f);
+                float a = std::min(ori_motion_cap, smooth_ori * 0.25f + ang * 1.2f);
                 head_q.w += (rq.w * sign - head_q.w) * a;
                 head_q.x += (rq.x * sign - head_q.x) * a;
                 head_q.y += (rq.y * sign - head_q.y) * a;

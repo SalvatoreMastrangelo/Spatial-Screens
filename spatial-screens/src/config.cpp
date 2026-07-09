@@ -130,6 +130,20 @@ bool set_option(Options& o, const std::string& k, const std::string& v) {
     else if (k == "predict-mode") o.predict_mode = v;
     else if (k == "scanout-ms") parse_float(k, v, o.scanout_ms);
     else if (k == "predict-cap-ms") parse_float(k, v, o.predict_cap_ms);
+    else if (k == "predict-scale") {
+        if (parse_float(k, v, o.predict_scale))
+            o.predict_scale = o.predict_scale < 0.f ? 0.f : (o.predict_scale > 1.f ? 1.f : o.predict_scale);
+    }
+    else if (k == "ang-dead") {
+        if (parse_float(k, v, o.ang_dead)) o.ang_dead = o.ang_dead < 0.f ? 0.f : o.ang_dead;
+    }
+    else if (k == "ang-ramp") {
+        if (parse_float(k, v, o.ang_ramp)) o.ang_ramp = o.ang_ramp < 0.1f ? 0.1f : o.ang_ramp;
+    }
+    else if (k == "ori-motion-cap") {
+        if (parse_float(k, v, o.ori_motion_cap))
+            o.ori_motion_cap = o.ori_motion_cap < 0.05f ? 0.05f : (o.ori_motion_cap > 1.f ? 1.f : o.ori_motion_cap);
+    }
     else if (k == "smooth-pos") parse_float(k, v, o.smooth_pos);
     else if (k == "smooth-ori") parse_float(k, v, o.smooth_ori);
     else if (k == "window") o.window = parse_bool(v);
