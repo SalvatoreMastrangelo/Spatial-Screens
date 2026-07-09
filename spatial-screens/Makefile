@@ -57,7 +57,7 @@ src/stereo_math_test.o: src/stereo_math_test.cpp src/config.h src/scene.h src/po
 stereo-math-test: src/stereo_math_test.o src/config.o src/scene.o
 	$(CXX) $^ -o $@
 
-src/predict_math_test.o: src/predict_math_test.cpp src/predict_math.h
+src/predict_math_test.o: src/predict_math_test.cpp src/predict_math.h src/pose_math.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # Pure timing/prediction math test — header-only unit, no SDK/Vulkan/X deps.

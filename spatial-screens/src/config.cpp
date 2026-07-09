@@ -144,6 +144,9 @@ bool set_option(Options& o, const std::string& k, const std::string& v) {
         if (parse_float(k, v, o.ori_motion_cap))
             o.ori_motion_cap = o.ori_motion_cap < 0.05f ? 0.05f : (o.ori_motion_cap > 1.f ? 1.f : o.ori_motion_cap);
     }
+    else if (k == "vel-cutoff") {
+        if (parse_float(k, v, o.vel_cutoff)) o.vel_cutoff = o.vel_cutoff < 0.1f ? 0.1f : o.vel_cutoff;
+    }
     else if (k == "smooth-pos") parse_float(k, v, o.smooth_pos);
     else if (k == "smooth-ori") parse_float(k, v, o.smooth_ori);
     else if (k == "window") o.window = parse_bool(v);

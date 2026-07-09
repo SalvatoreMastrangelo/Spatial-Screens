@@ -39,6 +39,7 @@ struct Options {
     float ang_dead = 2.f;                 // predict-gate angular deadband (deg/frame)
     float ang_ramp = 20.f;                // predict-gate angular ramp (deg/frame)
     float ori_motion_cap = 0.95f;         // orientation filter transparency ceiling during motion
+    float vel_cutoff = 5.f;               // smoothvel: angular-velocity low-pass cutoff (Hz)
     float smooth_pos = 0.10f;
     float smooth_ori = 0.40f;
     bool window = false;

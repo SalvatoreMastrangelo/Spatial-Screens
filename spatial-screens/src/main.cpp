@@ -103,6 +103,7 @@ static std::atomic<int> g_cam_h{0};
 static std::atomic<double> g_vsync_last{0.0};      // steady_clock secs of last vsync
 static std::atomic<double> g_vsync_interval{0.0};  // EMA of inter-vsync seconds
 static float g_last_predict_ms = 0.f;              // live prediction horizon, gated; written each frame below
+static float g_last_svel_deg = 0.f;                // smoothvel: live lead angle applied (deg), 0 in other modes
 static constexpr float PINCH_DISTANCE_SENSITIVITY = 4.0f; // tune after hands-on test; higher = faster response to hand motion
 static constexpr double FIST_HOLD_SECONDS = 0.5;          // how long a fist must be held before it triggers recenter
 static constexpr float GRAB_REPOSITION_GAIN = 1.5f; // image-fraction -> world-fraction; tune on hardware
@@ -303,6 +304,7 @@ int main(int argc, char** argv) {
     if (app_state.size > 0) o.size = app_state.size;
     bool fusion = true;
     bool both_cam = true;
+    bool gestures_enabled = true;   // --no-gestures skips the sidecar (fps A/B: isolates iGPU contention)
     std::string gesture_enhance = "gamma_clahe";
     float gesture_enhance_gamma = 0.45f, gesture_enhance_clahe_clip = 3.0f;
     for (int i = 1; i < argc; i++) {
@@ -311,6 +313,7 @@ int main(int argc, char** argv) {
         if (!strcmp(a, "--fusion")) { fusion = true; continue; }
         if (!strcmp(a, "--no-fusion")) { fusion = false; continue; }
         if (!strcmp(a, "--no-both-cam")) { both_cam = false; continue; }
+        if (!strcmp(a, "--no-gestures")) { gestures_enabled = false; continue; }
         if (!strcmp(a, "--enhance") && i + 1 < argc) { gesture_enhance = argv[++i]; continue; }
         if (!strcmp(a, "--enhance-gamma") && i + 1 < argc) { gesture_enhance_gamma = atof(argv[++i]); continue; }
         if (!strcmp(a, "--enhance-clahe-clip") && i + 1 < argc) { gesture_enhance_clahe_clip = atof(argv[++i]); continue; }
@@ -326,8 +329,8 @@ int main(int argc, char** argv) {
             printf("usage: %s [--monitor NAME] [--capture NAME|test] "
                    "[--capture-backend auto|portal|xshm|test] [--capture-hz N] [--distance M] "
                    "[--size IN] [--pitch-trim DEG] [--predict-ms MS] "
-                   "[--predict-mode off|fixed|vsync] [--scanout-ms MS] [--predict-cap-ms MS] "
-                   "[--predict-scale 0..1] [--ang-dead DEG] [--ang-ramp DEG] [--ori-motion-cap 0..1] "
+                   "[--predict-mode off|fixed|vsync|smoothvel] [--scanout-ms MS] [--predict-cap-ms MS] "
+                   "[--predict-scale 0..1] [--ang-dead DEG] [--ang-ramp DEG] [--ori-motion-cap 0..1] [--vel-cutoff HZ] "
                    "[--smooth-pos 0..1] "
                    "[--smooth-ori 0..1] [--ws-port N] [--window] [--config PATH] "
                    "[--dump-config] [--probe-camera] [--no-fusion] [--fusion] "
@@ -335,6 +338,7 @@ int main(int argc, char** argv) {
                    "  --no-fusion   disable stereo depth fusion (fusion is ON by default)\n"
                    "  --fusion      force-enable stereo depth fusion (default)\n"
                    "  --no-both-cam disable both-camera tracking union (fusion feeds depth only)\n"
+                   "  --no-gestures skip the MediaPipe gesture sidecar entirely (fps A/B)\n"
                    "  --enhance     hand-frame brightening: none|gamma|clahe|gamma_clahe (default gamma_clahe)\n"
                    "config: %s   state: %s\n",
                    argv[0], config_default_path().c_str(), state_file_path().c_str());
@@ -353,6 +357,7 @@ int main(int argc, char** argv) {
                o.predict_mode.c_str(), o.scanout_ms, o.predict_cap_ms);
         printf("predict-scale = %.2f\nang-dead = %.2f\nang-ramp = %.2f\nori-motion-cap = %.2f\n",
                o.predict_scale, o.ang_dead, o.ang_ramp, o.ori_motion_cap);
+        printf("vel-cutoff = %.2f\n", o.vel_cutoff);
         printf("smooth-pos = %.2f\nsmooth-ori = %.2f\nwindow = %s\nws-port = %d\n",
                o.smooth_pos, o.smooth_ori, o.window ? "true" : "false", o.ws_port);
         printf("stereo = %s\nipd-mm = %.1f\nworkspace = %s\nscreens = %zu configured\n",
@@ -371,6 +376,7 @@ int main(int argc, char** argv) {
     float scanout_ms = o.scanout_ms, predict_cap_ms = o.predict_cap_ms;
     float predict_scale = o.predict_scale, ang_dead = o.ang_dead, ang_ramp = o.ang_ramp;
     float ori_motion_cap = o.ori_motion_cap;
+    float vel_cutoff = o.vel_cutoff;
     bool force_window = o.window;
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
@@ -623,11 +629,15 @@ int main(int argc, char** argv) {
     xr_device_provider_get_glasses_version(g_provider, fw, &fwlen);
 
     std::string gesture_socket = "/tmp/spatial-screens-gestures-" + std::to_string(getpid()) + ".sock";
-    g_gestures.start(gesture_socket, executable_dir() + "/gestures/hand_tracker.py",
-                     5.0, fusion, both_cam, gesture_enhance,
-                     gesture_enhance_gamma, gesture_enhance_clahe_clip);
-    tele.log("info", g_gestures.enabled() ? "gesture sidecar connected"
-                                          : "gesture sidecar unavailable");
+    if (gestures_enabled) {
+        g_gestures.start(gesture_socket, executable_dir() + "/gestures/hand_tracker.py",
+                         5.0, fusion, both_cam, gesture_enhance,
+                         gesture_enhance_gamma, gesture_enhance_clahe_clip);
+        tele.log("info", g_gestures.enabled() ? "gesture sidecar connected"
+                                              : "gesture sidecar unavailable");
+    } else {
+        tele.log("info", "gesture sidecar disabled (--no-gestures)");
+    }
 
     // -- projection from the glasses' 52-degree diagonal FOV (16:10 panel).
     // Stereo: each eye is a full-FOV 1920x1200 panel — frustum from HALF the
@@ -743,6 +753,9 @@ int main(int argc, char** argv) {
     float dt_mean_ema = 1.f / 90.f;
     float speed_hat = 0.f;       // smoothed linear speed (m/s), One-Euro
     float ang_speed_hat = 0.f;   // smoothed angular speed (deg/frame)
+    Quat sv_prev_q;              // smoothvel: previous filtered head_q (angular-velocity estimate)
+    Vec3 sv_omega{ 0, 0, 0 };    // smoothvel: smoothed world-frame angular velocity (rad/s)
+    bool sv_have_prev = false;
 
     while (g_running) {
         // ---- input
@@ -1148,7 +1161,10 @@ int main(int argc, char** argv) {
         g_last_predict_ms = float(predict_s * 1e3);
 
         float pose[7] = {0};
-        if (get_gl_pose_carina(g_provider, pose, predict_s * 1e9) == 0) {
+        // smoothvel does its own extrapolation from a de-noised velocity, so the SDK
+        // must return the un-extrapolated pose (predict 0); other modes let it predict.
+        double sdk_predict_ns = (predict_mode == "smoothvel") ? 0.0 : predict_s * 1e9;
+        if (get_gl_pose_carina(g_provider, pose, sdk_predict_ns) == 0) {
             Vec3 rp = { pose[0], pose[1], pose[2] };
             Quat rq = { pose[3], pose[4], pose[5], pose[6] };
             if (!have_pose) {
@@ -1195,6 +1211,20 @@ int main(int argc, char** argv) {
                 if (m > 1e-6f) { head_q.w /= m; head_q.x /= m; head_q.y /= m; head_q.z /= m; }
             }
         }
+        // smoothvel: track a low-passed world-frame angular velocity from the filtered
+        // head pose. Runs every frame (cheap); consumed only in smoothvel mode at the
+        // view build. At rest Δq→0 so ω decays to ~0 (no shimmer), independent of the gate.
+        if (have_pose) {
+            if (sv_have_prev) {
+                Vec3 rv = quat_delta_rotvec(sv_prev_q, head_q);   // world-frame delta this frame (rad)
+                float a_om = one_euro_alpha(vel_cutoff, dt);
+                sv_omega.x += (rv.x / dt - sv_omega.x) * a_om;
+                sv_omega.y += (rv.y / dt - sv_omega.y) * a_om;
+                sv_omega.z += (rv.z / dt - sv_omega.z) * a_om;
+            }
+            sv_prev_q = head_q;
+            sv_have_prev = true;
+        }
         if (have_pose) {
             float tp[3] = { head_p.x, head_p.y, head_p.z };
             float tq[4] = { head_q.w, head_q.x, head_q.y, head_q.z };
@@ -1228,7 +1258,16 @@ int main(int argc, char** argv) {
         int ndraw[2] = {0, 0};
         if (have_pose && anchored) {
             // view = trim ⊗ inverse(recentered head pose)
-            Quat head_rc = qmul(qconj(ori_offset), head_q);
+            // smoothvel: extrapolate the DISPLAY orientation forward by the gated horizon
+            // using our de-noised angular velocity (display-only — gestures/telemetry above
+            // keep the un-predicted pose). Other modes render head_q directly.
+            Quat disp_q = (predict_mode == "smoothvel")
+                        ? quat_integrate(head_q, sv_omega, float(predict_s)) : head_q;
+            g_last_svel_deg = (predict_mode == "smoothvel")
+                        ? std::sqrt(sv_omega.x * sv_omega.x + sv_omega.y * sv_omega.y +
+                                    sv_omega.z * sv_omega.z) * float(predict_s) * 180.f / float(M_PI)
+                        : 0.f;
+            Quat head_rc = qmul(qconj(ori_offset), disp_q);
             Vec3 hp = qrot(qconj(ori_offset), head_p);
             Quat view_q = qconj(qmul(head_rc, trim));
             Vec3 hp_neg = qrot(view_q, { -hp.x, -hp.y, -hp.z });
@@ -1508,8 +1547,8 @@ int main(int argc, char** argv) {
             double vs_int = g_vsync_interval.load(std::memory_order_relaxed);
             double vs_age = mono_now_s() - g_vsync_last.load(std::memory_order_relaxed);
             bool vs_ok = vs_int > 0.0 && vs_age < 8.0 * vs_int;
-            printf("  predict %.1fms  dt %.1f/%.1f/%.1f ms(mean/p95/max)  vsync %s %.2fms\n",
-                   g_last_predict_ms, dmean * 1e3f, dp95 * 1e3f, dmax * 1e3f,
+            printf("  predict %.1fms  svel %.2fdeg  dt %.1f/%.1f/%.1f ms(mean/p95/max)  vsync %s %.2fms\n",
+                   g_last_predict_ms, g_last_svel_deg, dmean * 1e3f, dp95 * 1e3f, dmax * 1e3f,
                    vs_ok ? "ok" : "ABSENT", vs_int * 1e3);
 
             frames = 0;

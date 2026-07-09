@@ -3,6 +3,7 @@
 // says otherwise; the render loop uses a steady_clock seconds timebase.
 #pragma once
 #include <cmath>
+#include "pose_math.h"   // Quat/Vec3, qmul/qconj for the smoothed-velocity extrapolation
 
 // One-Euro low-pass blend factor for a cutoff (Hz) and sample period dt (s).
 // alpha in (0,1): larger dt or larger cutoff -> larger alpha -> less smoothing.
@@ -52,4 +53,38 @@ inline float predict_gate(float lin_speed, float ang_speed,
     float g = gl > ga ? gl : ga;
     if (g < 0.f) g = 0.f; else if (g > 1.f) g = 1.f;
     return g;
+}
+
+// World-frame rotation vector (radians, axis*angle) taking q_prev to q_now:
+// log(q_now * q_prev^-1). Shortest arc (angle in [0, pi]); divide by dt for an
+// angular velocity. Returns 0 for coincident/near-coincident poses. Assumes unit
+// quats (SDK poses are unit; conjugate == inverse).
+inline Vec3 quat_delta_rotvec(const Quat& q_prev, const Quat& q_now) {
+    Quat dq = qmul(q_now, qconj(q_prev));
+    if (dq.w < 0.f) { dq.w = -dq.w; dq.x = -dq.x; dq.y = -dq.y; dq.z = -dq.z; }
+    float s = std::sqrt(dq.x * dq.x + dq.y * dq.y + dq.z * dq.z);   // |sin(theta/2)|
+    if (s < 1e-9f) return { 0.f, 0.f, 0.f };
+    float theta = 2.f * std::atan2(s, dq.w);                       // [0, pi]
+    float k = theta / s;
+    return { dq.x * k, dq.y * k, dq.z * k };
+}
+
+// Extrapolate q forward by a world-frame angular velocity omega (rad/s) over
+// horizon_s seconds: exp(omega*horizon) * q (pre-multiply = world frame),
+// normalized. omega==0 (or horizon 0) returns q unchanged.
+inline Quat quat_integrate(const Quat& q, const Vec3& omega, float horizon_s) {
+    float rx = omega.x * horizon_s, ry = omega.y * horizon_s, rz = omega.z * horizon_s;
+    float theta = std::sqrt(rx * rx + ry * ry + rz * rz);
+    Quat dq;
+    if (theta < 1e-9f) {
+        dq = Quat{};                       // identity
+    } else {
+        float half = 0.5f * theta;
+        float sc = std::sin(half) / theta; // rotvec * sc == axis * sin(half)
+        dq = { std::cos(half), rx * sc, ry * sc, rz * sc };
+    }
+    Quat out = qmul(dq, q);
+    float m = std::sqrt(out.w * out.w + out.x * out.x + out.y * out.y + out.z * out.z);
+    if (m > 1e-9f) { out.w /= m; out.x /= m; out.y /= m; out.z /= m; }
+    return out;
 }
