@@ -1516,7 +1516,12 @@ int main(int argc, char** argv) {
                     mat_from_pose(order[i].q, order[i].p, model);
                     mat_mul(view, model, vm);
                     mat_mul(proj, vm, smvp);
-                    float aspect = multi ? s.aspect : cap_aspect;
+                    // Window/placeholder screens carry their own pixel aspect
+                    // (set by the pump via scene_window_resize); use it even in
+                    // single-screen mode. Only a lone MONITOR screen falls back
+                    // to cap_aspect — otherwise a near-square window stretches to
+                    // the captured desktop's 16:10.
+                    float aspect = (s.source_index != 0 || multi) ? s.aspect : cap_aspect;
                     float diag_m = s.cfg.size * ((multi && !s.cfg.has_pose_override) ? rack_size_scale : 1.f) * 0.0254f;
                     float w2 = diag_m * aspect / std::sqrt(1 + aspect * aspect) * 0.5f;
                     float h2 = diag_m / std::sqrt(1 + aspect * aspect) * 0.5f;
