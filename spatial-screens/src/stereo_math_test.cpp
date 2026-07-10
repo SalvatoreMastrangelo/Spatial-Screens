@@ -5,6 +5,7 @@
 #include "scene.h"
 #include "pose_math.h"
 #include "stereo.h"
+#include "source_slots.h"
 #include <cmath>
 #include <cstdio>
 
@@ -340,6 +341,19 @@ static void test_stereo_math() {
     CHECK(rf > r * 1.1f);                // sanity: full-width frustum is wider
 }
 
+static void test_source_slots() {
+    SourceSlots s;
+    CHECK(s.alloc() == 1);           // slot 0 is the monitor, never handed out
+    CHECK(s.alloc() == 2);
+    s.release(1);
+    CHECK(s.alloc() == 1);            // lowest free reused
+    for (int i = 3; i < kSourceSlots; i++) CHECK(s.alloc() == i);  // fill 3..7
+    CHECK(s.alloc() == -1);          // full (1,2 already out + 3..7)
+    s.release(4);
+    CHECK(s.alloc() == 4);
+    CHECK(kLabelSource == kSourceSlots);
+}
+
 int main() {
     test_config_keys();
     test_window_screens();
@@ -349,6 +363,7 @@ int main() {
     test_head_delta_orient();
     test_pick_gaze_screen();
     test_stereo_math();
+    test_source_slots();
     if (failures == 0) { printf("stereo_math_test: all checks passed\n"); return 0; }
     printf("stereo_math_test: %d failure(s)\n", failures);
     return 1;
