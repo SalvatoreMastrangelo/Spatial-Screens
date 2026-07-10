@@ -119,6 +119,7 @@ static bool window_dims(Display* dpy, Window w, int& ow, int& oh) {
 // substring against either WM_CLASS field (res_class or res_name).
 static Window find_window_by_match(Display* dpy, Window root, const std::string& needle) {
     if (needle == ":active") return read_active_window(dpy, root);
+    if (needle.empty()) return 0;   // std::string::find("") == 0 would bind the first classed window
     Window rr, parent, *kids = nullptr; unsigned nk = 0;
     if (!XQueryTree(dpy, root, &rr, &parent, &kids, &nk)) return 0;
     Window found = 0;
@@ -1426,19 +1427,17 @@ int main(int argc, char** argv) {
         }
 
         // ---- render
-        // Draw-list caps tie together, per eye: up to 40 screens (config's
-        // declared rack + append-only window spawns from Ctrl+Alt+W, T8; the
-        // scene-sort loop below caps nscene at 40) + up to 8 framed screens
-        // (active screen, monitor or window, plus all 7 window slots — T11
-        // gray/white frame on every window, green on the active one) x 4
-        // border bars + 1 active-screen resolution label + VO dot + 2
-        // per-hand status dots + 2 hands x 21 landmarks =
-        // 40+32+1+1+2+42 = 118, just over 112: the realistic ceiling assumes
-        // a rack far smaller than the 40-slot safety array, and the
-        // `nd < 112` guards on every bar/label/dot write make any overshoot
-        // a graceful drop (no overflow), never memory-unsafe. Bump any cap
-        // and this grows too.
-        QuadDraw draws[2][112];
+        // Draw-list sizing, per eye. Every write into the list below is guarded
+        // by `nd < kMaxDraws`, so it can never overflow — the array size is a
+        // capacity target, not the safety bound. Worst case, per eye: up to 40
+        // content quads (the scene-sort loop caps nscene at 40) + framed screens
+        // (window slots cap at 7, config caps framed screens at 16) each adding
+        // 4 border bars + 1 active-screen resolution label + 1 VO/6DoF dot + 2
+        // per-hand status dots + 2 hands x 21 landmark dots. kMaxDraws = 128
+        // covers the realistic ceiling incl. all 42 landmark dots; anything past
+        // the cap is dropped gracefully, never memory-unsafe.
+        constexpr int kMaxDraws = 128;
+        QuadDraw draws[2][kMaxDraws];
         int ndraw[2] = {0, 0};
 
         // ---- active-screen resolution label: rasterize on change (Task 10)
@@ -1511,7 +1510,7 @@ int main(int argc, char** argv) {
                 // the same green (design: the feedback channels agree).
                 const float status_green[4] = { 0.20f, 0.90f, 0.30f, 1.f };
                 for (int i = 0; i < nscene; i++) {
-                    if (nd >= 112) break;
+                    if (nd >= kMaxDraws) break;
                     const ScreenInst& s = *order[i].s;
                     float model[16], vm[16], smvp[16];
                     mat_from_pose(order[i].q, order[i].p, model);
@@ -1527,6 +1526,14 @@ int main(int argc, char** argv) {
                     d.rect[0] = 0; d.rect[1] = 0; d.rect[2] = w2; d.rect[3] = h2;
                     memcpy(d.uv, s.uv, sizeof(s.uv));
                     d.textured = true;
+                    // Route the content quad to THIS screen's renderer texture
+                    // slot. Without this, source_index defaults to 0 and every
+                    // window screen samples the monitor texture (slot 0).
+                    if (s.source_index < 0) {
+                        d.textured = false;              // inert/unresolved placeholder — blank, not the live monitor image
+                    } else {
+                        d.source_index = s.source_index; // 0 = monitor (unchanged), 1..7 = this screen's window texture
+                    }
                     // Selection/window-frame highlight: a border frame OUTSIDE
                     // the content rect [±w2,±h2], coplanar with the screen
                     // (shares smvp) so it gets correct per-eye stereo and
@@ -1548,7 +1555,7 @@ int main(int argc, char** argv) {
                             { -(w2 + b * 0.5f), 0.f,      b * 0.5f,    h2       },
                             {  (w2 + b * 0.5f), 0.f,      b * 0.5f,    h2       },
                         };
-                        for (int e = 0; e < 4 && nd < 112; e++) {
+                        for (int e = 0; e < 4 && nd < kMaxDraws; e++) {
                             QuadDraw& bd = dl[nd++];
                             memcpy(bd.mvp, smvp, sizeof(smvp));
                             memcpy(bd.color, bcol, 4 * sizeof(float));
@@ -1564,7 +1571,7 @@ int main(int argc, char** argv) {
                         // texture slot. "%dx%d" of the bound source dims.
                         // ACTIVE-ONLY: window frames on non-active screens
                         // must not draw the label.
-                        if (is_active && show_label && nd < 112) {
+                        if (is_active && show_label && nd < kMaxDraws) {
                             const float lh2 = LABEL_HEIGHT_M * 0.5f;
                             const float lw2 = lh2 * g_lbl_aspect;
                             QuadDraw& ld = dl[nd++];
@@ -1593,13 +1600,15 @@ int main(int argc, char** argv) {
                 float tan_r = r / near_z, tan_t = t / near_z;
                 float eye_m[16] = { 1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,
                                     eye_off, -0.95f * tan_t * DOT_Z, -DOT_Z, 1 };
-                QuadDraw& d = dl[nd++];
-                mat_mul(proj, eye_m, d.mvp);
-                memcpy(d.color, sixdof_live ? live : frozen, 4 * sizeof(float));
                 float dot_r = 0.0045f * DOT_Z;     // ~0.5 degrees apparent size
-                d.rect[0] = 0; d.rect[1] = 0; d.rect[2] = dot_r; d.rect[3] = dot_r;
-                d.textured = false;
-                d.circle = true;
+                if (nd < kMaxDraws) {
+                    QuadDraw& d = dl[nd++];
+                    mat_mul(proj, eye_m, d.mvp);
+                    memcpy(d.color, sixdof_live ? live : frozen, 4 * sizeof(float));
+                    d.rect[0] = 0; d.rect[1] = 0; d.rect[2] = dot_r; d.rect[3] = dot_r;
+                    d.textured = false;
+                    d.circle = true;
+                }
 
                 // Per-hand pinch/arm-status dots: one per hand at the bottom
                 // corners (left hand -> bottom-left, right hand -> bottom-right),
@@ -1613,7 +1622,7 @@ int main(int argc, char** argv) {
                     const float blue[4]  = { 0.30f, 0.55f, 1.f, 1.f };
                     const HandState* hstate[2] = { &gev.left, &gev.right };
                     const float hxf[2] = { -0.95f, 0.95f };  // left dot left, right dot right
-                    for (int i = 0; i < 2; i++) {
+                    for (int i = 0; i < 2 && nd < kMaxDraws; i++) {
                         const HandState& h = *hstate[i];
                         const float* pcol = !h.present ? grey
                                           : !armed[i]  ? amber
@@ -1666,7 +1675,7 @@ int main(int argc, char** argv) {
                         // Unarmed: the whole hand is drawn mildly transparent;
                         // arming (open palm) makes it opaque.
                         const float ov_alpha = armed[hnd] ? 1.f : 0.45f;
-                        for (int i = 0; i < 21 && nd < 112; i++) {
+                        for (int i = 0; i < 21 && nd < kMaxDraws; i++) {
                             float nx = h.landmarks[i][0];
                             float ny = h.landmarks[i][1];
                             // Normalized image coords -> panel-local. Image y is
