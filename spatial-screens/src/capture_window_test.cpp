@@ -22,6 +22,19 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     int rc = 0;
     if (f.w != 200 || f.h != 100) { printf("FAIL dims %dx%d\n", f.w, f.h); rc = 1; }
+
+    // Resize regression: growing the window mid-capture must not crash and
+    // latest_frame() must report the NEW dims (per-slot lazy rebuild, with
+    // the reader-held old slot left untouched). Guards the resize UAF/OOB.
+    XResizeWindow(d, w, 320, 240); XSync(d, False);
+    CaptureFrame g{};
+    bool resized_ok = false;
+    for (int i = 0; i < 200; i++) {
+        if (cap->latest_frame(g) && g.w == 320 && g.h == 240) { resized_ok = true; break; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (!resized_ok) { printf("FAIL resize dims %dx%d\n", g.w, g.h); rc = 1; }
+
     cap->stop();
     XDestroyWindow(d, w); XCloseDisplay(d);
     if (!rc) printf("ok\n");
