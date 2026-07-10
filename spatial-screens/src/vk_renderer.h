@@ -6,6 +6,8 @@
 #include <vulkan/vulkan.h>
 #include <vector>
 
+#include "source_slots.h"
+
 struct QuadDraw {
     float mvp[16];   // column-major, Vulkan clip conventions (y-down, z 0..1)
     float color[4];
@@ -13,6 +15,21 @@ struct QuadDraw {
     float uv[4] = {0, 0, 1, 1};  // u0,v0,u1,v1 sub-rect of the shared texture
     bool textured;
     bool circle = false;  // clip to inscribed circle (status dot)
+    int source_index = 0;  // index into VkRend::src[]; which texture this quad samples
+};
+
+// Per-source texture/staging/descriptor state (image + upload buffer + the
+// dset that binds this slot's view for sampling). One per source slot.
+struct RSource {
+    VkImage tex = VK_NULL_HANDLE;
+    VkDeviceMemory tex_mem = VK_NULL_HANDLE;
+    VkImageView tex_view = VK_NULL_HANDLE;
+    uint32_t w = 0, h = 0, pitch = 0;  // pitch in bytes
+    VkBuffer staging = VK_NULL_HANDLE;
+    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
+    void* staging_ptr = nullptr;
+    bool dirty = false;
+    VkDescriptorSet dset = VK_NULL_HANDLE;
 };
 
 struct VkRend {
@@ -37,17 +54,22 @@ struct VkRend {
     VkPipelineLayout playout = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkDescriptorPool dpool = VK_NULL_HANDLE;
-    VkDescriptorSet dset = VK_NULL_HANDLE;
     VkSampler sampler = VK_NULL_HANDLE;
 
-    VkImage tex = VK_NULL_HANDLE;
-    VkDeviceMemory tex_mem = VK_NULL_HANDLE;
-    VkImageView tex_view = VK_NULL_HANDLE;
-    uint32_t tex_w = 0, tex_h = 0, tex_pitch = 0;  // pitch in bytes
-    VkBuffer staging = VK_NULL_HANDLE;
-    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
-    void* staging_ptr = nullptr;
-    bool tex_dirty = false;
+    // index 0 = monitor · 1..kSourceSlots-1 = window · kLabelSource = label
+    RSource src[kSourceSlots + 1];
+
+    // Back-compat aliases for main.cpp's pre-Task-7 direct scalar access to
+    // the monitor texture (slot 0) — true references into src[0], not copies,
+    // so reads/writes through either name stay in sync (main.cpp writes
+    // tex_dirty directly for the cursor-overlay path). Task 7 migrates
+    // main.cpp onto vkr_set_source_size/vkr_upload_source; these aliases can
+    // be deleted once no call site references them.
+    uint32_t& tex_w = src[0].w;
+    uint32_t& tex_h = src[0].h;
+    uint32_t& tex_pitch = src[0].pitch;      // pitch in bytes
+    void*& staging_ptr = src[0].staging_ptr;
+    bool& tex_dirty = src[0].dirty;
 
     static const int FRAMES = 2;  // frames in flight
     VkCommandPool pool = VK_NULL_HANDLE;
@@ -66,6 +88,12 @@ bool vkr_init_pipeline(VkRend& r);
 bool vkr_init_texture(VkRend& r, uint32_t w, uint32_t h, uint32_t pitch_bytes);
 void vkr_destroy_texture(VkRend& r);
 void vkr_upload(VkRend& r, const void* pixels, size_t bytes);
+// Per-source twins: idx selects VkRend::src[idx] (0 = monitor, 1..kSourceSlots-1
+// = window, kLabelSource = label). vkr_set_source_size lazily (re)creates the
+// slot's image/staging only when dims differ or it isn't created yet.
+// vkr_init_texture/vkr_upload are thin idx==0 wrappers over these.
+void vkr_set_source_size(VkRend& r, int idx, uint32_t w, uint32_t h, uint32_t pitch);
+void vkr_upload_source(VkRend& r, int idx, const void* pixels, size_t bytes);
 // Wait for all in-flight frames before mutating the staging buffer — a
 // prior frame's buffer->image copy may still be reading it (visible as a
 // flickering cursor overlay otherwise).

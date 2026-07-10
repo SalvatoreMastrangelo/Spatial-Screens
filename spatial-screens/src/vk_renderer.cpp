@@ -323,19 +323,17 @@ bool vkr_init_pipeline(VkRend& r) {
     smi.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     VK_CHECK(vkCreateSampler(r.device, &smi, nullptr, &r.sampler));
 
-    VkDescriptorPoolSize psz{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+    // One set per source slot (0 monitor + 1..kSourceSlots-1 window + label);
+    // FREE_DESCRIPTOR_SET_BIT lets destroy_source() return a slot's set to the
+    // pool on resize/teardown instead of only ever growing usage.
+    VkDescriptorPoolSize psz{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kSourceSlots + 1};
     VkDescriptorPoolCreateInfo dpi{};
     dpi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dpi.maxSets = 1;
+    dpi.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    dpi.maxSets = kSourceSlots + 1;
     dpi.poolSizeCount = 1;
     dpi.pPoolSizes = &psz;
     VK_CHECK(vkCreateDescriptorPool(r.device, &dpi, nullptr, &r.dpool));
-    VkDescriptorSetAllocateInfo dai{};
-    dai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    dai.descriptorPool = r.dpool;
-    dai.descriptorSetCount = 1;
-    dai.pSetLayouts = &r.dlayout;
-    VK_CHECK(vkAllocateDescriptorSets(r.device, &dai, &r.dset));
     return true;
 }
 
@@ -348,8 +346,12 @@ static uint32_t mem_type(VkPhysicalDevice phys, uint32_t bits, VkMemoryPropertyF
     return 0;
 }
 
-bool vkr_init_texture(VkRend& r, uint32_t w, uint32_t h, uint32_t pitch_bytes) {
-    r.tex_w = w; r.tex_h = h; r.tex_pitch = pitch_bytes;
+// Creates slot idx's image + staging + descriptor set at w x h (pitch_bytes
+// row stride). Symmetric with destroy_source: every handle allocated here is
+// freed there exactly once.
+static bool create_source(VkRend& r, int idx, uint32_t w, uint32_t h, uint32_t pitch_bytes) {
+    RSource& s = r.src[idx];
+    s.w = w; s.h = h; s.pitch = pitch_bytes;
 
     VkImageCreateInfo ii{};
     ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -362,35 +364,35 @@ bool vkr_init_texture(VkRend& r, uint32_t w, uint32_t h, uint32_t pitch_bytes) {
     ii.tiling = VK_IMAGE_TILING_OPTIMAL;
     ii.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VK_CHECK(vkCreateImage(r.device, &ii, nullptr, &r.tex));
+    VK_CHECK(vkCreateImage(r.device, &ii, nullptr, &s.tex));
     VkMemoryRequirements mr;
-    vkGetImageMemoryRequirements(r.device, r.tex, &mr);
+    vkGetImageMemoryRequirements(r.device, s.tex, &mr);
     VkMemoryAllocateInfo ma{};
     ma.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     ma.allocationSize = mr.size;
     ma.memoryTypeIndex = mem_type(r.phys, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    VK_CHECK(vkAllocateMemory(r.device, &ma, nullptr, &r.tex_mem));
-    VK_CHECK(vkBindImageMemory(r.device, r.tex, r.tex_mem, 0));
+    VK_CHECK(vkAllocateMemory(r.device, &ma, nullptr, &s.tex_mem));
+    VK_CHECK(vkBindImageMemory(r.device, s.tex, s.tex_mem, 0));
     VkImageViewCreateInfo vi{};
     vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    vi.image = r.tex;
+    vi.image = s.tex;
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vi.format = ii.format;
     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    VK_CHECK(vkCreateImageView(r.device, &vi, nullptr, &r.tex_view));
+    VK_CHECK(vkCreateImageView(r.device, &vi, nullptr, &s.tex_view));
 
     VkBufferCreateInfo bi{};
     bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bi.size = (VkDeviceSize)pitch_bytes * h;
     bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    VK_CHECK(vkCreateBuffer(r.device, &bi, nullptr, &r.staging));
-    vkGetBufferMemoryRequirements(r.device, r.staging, &mr);
+    VK_CHECK(vkCreateBuffer(r.device, &bi, nullptr, &s.staging));
+    vkGetBufferMemoryRequirements(r.device, s.staging, &mr);
     ma.allocationSize = mr.size;
     ma.memoryTypeIndex = mem_type(r.phys, mr.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    VK_CHECK(vkAllocateMemory(r.device, &ma, nullptr, &r.staging_mem));
-    VK_CHECK(vkBindBufferMemory(r.device, r.staging, r.staging_mem, 0));
-    VK_CHECK(vkMapMemory(r.device, r.staging_mem, 0, VK_WHOLE_SIZE, 0, &r.staging_ptr));
+    VK_CHECK(vkAllocateMemory(r.device, &ma, nullptr, &s.staging_mem));
+    VK_CHECK(vkBindBufferMemory(r.device, s.staging, s.staging_mem, 0));
+    VK_CHECK(vkMapMemory(r.device, s.staging_mem, 0, VK_WHOLE_SIZE, 0, &s.staging_ptr));
 
     // One-shot transition UNDEFINED -> SHADER_READ_ONLY so the descriptor is
     // valid before the first capture lands.
@@ -412,7 +414,7 @@ bool vkr_init_texture(VkRend& r, uint32_t w, uint32_t h, uint32_t pitch_bytes) {
     bar.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     bar.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    bar.image = r.tex;
+    bar.image = s.tex;
     bar.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &bar);
@@ -430,30 +432,62 @@ bool vkr_init_texture(VkRend& r, uint32_t w, uint32_t h, uint32_t pitch_bytes) {
     vkQueueWaitIdle(r.queue);
     vkFreeCommandBuffers(r.device, r.pool, 1, &cb);
 
-    VkDescriptorImageInfo dii{r.sampler, r.tex_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorSetAllocateInfo dai{};
+    dai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dai.descriptorPool = r.dpool;
+    dai.descriptorSetCount = 1;
+    dai.pSetLayouts = &r.dlayout;
+    VK_CHECK(vkAllocateDescriptorSets(r.device, &dai, &s.dset));
+
+    VkDescriptorImageInfo dii{r.sampler, s.tex_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet wr{};
     wr.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    wr.dstSet = r.dset;
+    wr.dstSet = s.dset;
     wr.dstBinding = 0;
     wr.descriptorCount = 1;
     wr.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     wr.pImageInfo = &dii;
     vkUpdateDescriptorSets(r.device, 1, &wr, 0, nullptr);
-    r.tex_dirty = false;
+    s.dirty = false;
+    return true;
+}
+
+// Tears down every handle create_source(r, idx) may have allocated. Safe to
+// call on an already-destroyed (or never-created) slot — every destroy is
+// individually null-guarded, matching the old vkr_destroy_texture contract.
+static void destroy_source(VkRend& r, int idx) {
+    if (!r.device) return;
+    RSource& s = r.src[idx];
+    if (s.staging_ptr) vkUnmapMemory(r.device, s.staging_mem);
+    if (s.staging) vkDestroyBuffer(r.device, s.staging, nullptr);
+    if (s.staging_mem) vkFreeMemory(r.device, s.staging_mem, nullptr);
+    if (s.tex_view) vkDestroyImageView(r.device, s.tex_view, nullptr);
+    if (s.tex) vkDestroyImage(r.device, s.tex, nullptr);
+    if (s.tex_mem) vkFreeMemory(r.device, s.tex_mem, nullptr);
+    if (s.dset && r.dpool) vkFreeDescriptorSets(r.device, r.dpool, 1, &s.dset);
+    s.staging = VK_NULL_HANDLE; s.staging_mem = VK_NULL_HANDLE; s.staging_ptr = nullptr;
+    s.tex = VK_NULL_HANDLE; s.tex_mem = VK_NULL_HANDLE; s.tex_view = VK_NULL_HANDLE;
+    s.dset = VK_NULL_HANDLE;
+    s.w = 0; s.h = 0; s.pitch = 0; s.dirty = false;
+}
+
+void vkr_set_source_size(VkRend& r, int idx, uint32_t w, uint32_t h, uint32_t pitch) {
+    RSource& s = r.src[idx];
+    if (s.tex_view != VK_NULL_HANDLE && s.w == w && s.h == h && s.pitch == pitch) return;
+    vkr_wait_uploads(r);  // a prior frame's copy may still reference the old image/staging
+    destroy_source(r, idx);
+    create_source(r, idx, w, h, pitch);
+}
+
+bool vkr_init_texture(VkRend& r, uint32_t w, uint32_t h, uint32_t pitch_bytes) {
+    vkr_set_source_size(r, 0, w, h, pitch_bytes);
     return true;
 }
 
 void vkr_destroy_texture(VkRend& r) {
     if (!r.device) return;
     vkDeviceWaitIdle(r.device);
-    if (r.staging_ptr) vkUnmapMemory(r.device, r.staging_mem);
-    if (r.staging) vkDestroyBuffer(r.device, r.staging, nullptr);
-    if (r.staging_mem) vkFreeMemory(r.device, r.staging_mem, nullptr);
-    if (r.tex_view) vkDestroyImageView(r.device, r.tex_view, nullptr);
-    if (r.tex) vkDestroyImage(r.device, r.tex, nullptr);
-    if (r.tex_mem) vkFreeMemory(r.device, r.tex_mem, nullptr);
-    r.staging = VK_NULL_HANDLE; r.staging_mem = VK_NULL_HANDLE; r.staging_ptr = nullptr;
-    r.tex = VK_NULL_HANDLE; r.tex_mem = VK_NULL_HANDLE; r.tex_view = VK_NULL_HANDLE;
+    destroy_source(r, 0);
 }
 
 void vkr_wait_uploads(VkRend& r) {
@@ -461,11 +495,16 @@ void vkr_wait_uploads(VkRend& r) {
     vkWaitForFences(r.device, VkRend::FRAMES, r.fence, VK_TRUE, 2000000000ull);
 }
 
-void vkr_upload(VkRend& r, const void* pixels, size_t bytes) {
-    size_t cap = (size_t)r.tex_pitch * r.tex_h;
+void vkr_upload_source(VkRend& r, int idx, const void* pixels, size_t bytes) {
+    RSource& s = r.src[idx];
+    size_t cap = (size_t)s.pitch * s.h;
     if (bytes > cap) bytes = cap;
-    memcpy(r.staging_ptr, pixels, bytes);
-    r.tex_dirty = true;
+    memcpy(s.staging_ptr, pixels, bytes);
+    s.dirty = true;
+}
+
+void vkr_upload(VkRend& r, const void* pixels, size_t bytes) {
+    vkr_upload_source(r, 0, pixels, bytes);
 }
 
 static void record_quads(VkCommandBuffer cb, VkRend& r, const QuadDraw* draws, int n) {
@@ -517,7 +556,12 @@ static bool submit_impl(VkRend& r, const QuadDraw* const lists[2], const int cou
     cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cb, &cbi);
 
-    if (r.tex_dirty) {
+    // Copy every dirty source's staging buffer into its image. Today only
+    // slot 0 (monitor) is ever dirty; window/label slots join once later
+    // tasks call vkr_upload_source on them.
+    for (int idx = 0; idx <= kSourceSlots; idx++) {
+        RSource& s = r.src[idx];
+        if (!s.dirty || s.tex == VK_NULL_HANDLE) continue;
         VkImageMemoryBarrier bar{};
         bar.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         bar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -526,15 +570,15 @@ static bool submit_impl(VkRend& r, const QuadDraw* const lists[2], const int cou
         bar.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         bar.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
         bar.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        bar.image = r.tex;
+        bar.image = s.tex;
         bar.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                              VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &bar);
         VkBufferImageCopy cp{};
-        cp.bufferRowLength = r.tex_pitch / 4;  // pitch in pixels (32bpp)
+        cp.bufferRowLength = s.pitch / 4;  // pitch in pixels (32bpp)
         cp.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        cp.imageExtent = {r.tex_w, r.tex_h, 1};
-        vkCmdCopyBufferToImage(cb, r.staging, r.tex,
+        cp.imageExtent = {s.w, s.h, 1};
+        vkCmdCopyBufferToImage(cb, s.staging, s.tex,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp);
         bar.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         bar.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -542,7 +586,7 @@ static bool submit_impl(VkRend& r, const QuadDraw* const lists[2], const int cou
         bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
         vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &bar);
-        r.tex_dirty = false;
+        s.dirty = false;
     }
 
     VkClearValue clear{};  // true black: OLED pixels off = transparent glasses
@@ -557,7 +601,7 @@ static bool submit_impl(VkRend& r, const QuadDraw* const lists[2], const int cou
 
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, r.pipeline);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, r.playout,
-                            0, 1, &r.dset, 0, nullptr);
+                            0, 1, &r.src[0].dset, 0, nullptr);
     if (!lists[1]) {
         VkViewport vpt{0, 0, (float)r.extent.width, (float)r.extent.height, 0, 1};
         VkRect2D sc{{0, 0}, r.extent};
@@ -637,7 +681,10 @@ bool vkr_draw_stereo(VkRend& r, const QuadDraw* left, int nleft,
 void vkr_destroy_device(VkRend& r) {
     if (r.device) {
         vkDeviceWaitIdle(r.device);
-        vkr_destroy_texture(r);
+        // Already waited idle above — call the private teardown directly for
+        // every slot instead of vkr_destroy_texture(idx 0 only), which would
+        // also re-wait per call.
+        for (int i = 0; i <= kSourceSlots; i++) destroy_source(r, i);
         destroy_swapchain_objects(r);
         // Every handle below belongs to this device — null each on destroy so
         // the rebuild path (vkr_init_swapchain's `if (!r.pass)` cache, then a
@@ -647,8 +694,7 @@ void vkr_destroy_device(VkRend& r) {
         if (r.sampler) vkDestroySampler(r.device, r.sampler, nullptr);
         r.sampler = VK_NULL_HANDLE;
         if (r.dpool) vkDestroyDescriptorPool(r.device, r.dpool, nullptr);
-        r.dpool = VK_NULL_HANDLE;
-        r.dset = VK_NULL_HANDLE;  // freed with its pool
+        r.dpool = VK_NULL_HANDLE;  // each slot's dset already freed above
         if (r.pipeline) vkDestroyPipeline(r.device, r.pipeline, nullptr);
         r.pipeline = VK_NULL_HANDLE;
         if (r.playout) vkDestroyPipelineLayout(r.device, r.playout, nullptr);
