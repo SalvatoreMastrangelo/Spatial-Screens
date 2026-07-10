@@ -48,6 +48,14 @@ std::vector<ScreenInst> scene_build(const std::vector<ScreenCfg>& cfg,
         return out;
     }
     for (auto& c : cfg) {
+        if (c.source == "window") {
+            ScreenInst s;
+            s.cfg = c;
+            s.uv[0] = 0; s.uv[1] = 0; s.uv[2] = 1; s.uv[3] = 1;
+            s.source_index = -1;   // unresolved until a window is bound
+            out.push_back(s);
+            continue;
+        }
         const MonRect* m = find_monitor(monitors, c.monitor);
         if (!m) {
             fprintf(stderr, "scene: monitor '%s' not found — screen skipped\n",
@@ -74,6 +82,17 @@ void scene_screen_pose(const ScreenInst& s, const Quat& rack_q, const Vec3& rack
     Vec3 fwd = qrot(out_q, {0, 0, -1});
     float d = s.cfg.distance * dist_scale;
     out_p = { rack_p.x + fwd.x * d, rack_p.y + fwd.y * d, rack_p.z + fwd.z * d };
+}
+
+void scene_window_resize(ScreenInst& s, int new_w, int new_h) {
+    if (new_w <= 0 || new_h <= 0) return;
+    if (s.src_w > 0 && s.src_h > 0) {
+        float old_d = std::sqrt(float(s.src_w) * s.src_w + float(s.src_h) * s.src_h);
+        float new_d = std::sqrt(float(new_w) * new_w + float(new_h) * new_h);
+        if (old_d > 0) s.cfg.size *= new_d / old_d;
+    }
+    s.src_w = new_w; s.src_h = new_h;
+    s.aspect = float(new_w) / float(new_h);
 }
 
 void world_to_rack_frame(const Quat& rack_q, const Vec3& rack_p,

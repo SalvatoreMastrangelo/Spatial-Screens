@@ -81,6 +81,36 @@ static void test_config_keys() {
     CHECK(p.predict_mode == "fixed");
 }
 
+static void test_window_screens() {
+    MonRect fb{"eDP-1", 0, 0, 3840, 2400};
+    std::vector<MonRect> mons = {{"VS1", 0, 0, 1920, 1200}};
+
+    ScreenCfg w; w.source = "window";           // no monitor needed
+    ScreenCfg m; m.source = "monitor"; m.monitor = "VS1";
+    auto scene = scene_build({w, m}, mons, fb);
+    CHECK(scene.size() == 2);
+    // Window screen: placeholder slot, full-frame UV.
+    CHECK(scene[0].source_index == -1);
+    CHECK(scene[0].uv[0] == 0.f && scene[0].uv[1] == 0.f &&
+          scene[0].uv[2] == 1.f && scene[0].uv[3] == 1.f);
+    // Monitor screen unchanged: slot 0, sub-rect UV.
+    CHECK(scene[1].source_index == 0);
+    CHECK(std::fabs(scene[1].uv[2] - 0.5f) < 1e-6f);  // 1920/3840
+
+    // First bind sets aspect + dims, size unchanged.
+    ScreenInst& s = scene[0];
+    s.cfg.size = 24.f;
+    scene_window_resize(s, 1920, 1080);
+    CHECK(s.src_w == 1920 && s.src_h == 1080);
+    CHECK(std::fabs(s.aspect - 1920.f / 1080.f) < 1e-4f);
+    CHECK(std::fabs(s.cfg.size - 24.f) < 1e-4f);      // unchanged on first bind
+
+    // Resize scales size by the pixel-diagonal ratio (2x each dim -> 2x diag).
+    scene_window_resize(s, 3840, 2160);
+    CHECK(std::fabs(s.cfg.size - 48.f) < 1e-3f);
+    CHECK(std::fabs(s.aspect - 3840.f / 2160.f) < 1e-4f);
+}
+
 static void test_scene_build() {
     // 3840x2400 framebuffer split 2x2 into VS1..VS4 (1920x1200 tiles).
     MonRect fb{"eDP-1", 0, 0, 3840, 2400};
@@ -312,6 +342,7 @@ static void test_stereo_math() {
 
 int main() {
     test_config_keys();
+    test_window_screens();
     test_scene_build();
     test_scene_pose();
     test_pose_override();

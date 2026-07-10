@@ -12,8 +12,10 @@ struct MonRect { std::string name; int x = 0, y = 0, w = 0, h = 0; };
 
 struct ScreenInst {
     ScreenCfg cfg;
-    float uv[4] = {0, 0, 1, 1};  // u0,v0,u1,v1 into the shared texture
-    float aspect = 16.f / 10.f;  // monitor pixel aspect
+    float uv[4] = {0, 0, 1, 1};  // u0,v0,u1,v1 into the source texture
+    float aspect = 16.f / 10.f;  // pixel aspect (window: w/h)
+    int source_index = 0;        // 0 monitor · >=1 window · <0 placeholder
+    int src_w = 0, src_h = 0;     // bound source pixel dims (0 = unbound)
 };
 
 // cfg empty -> default rack over `monitors` in order (up to 4): center
@@ -23,6 +25,11 @@ struct ScreenInst {
 std::vector<ScreenInst> scene_build(const std::vector<ScreenCfg>& cfg,
                                     const std::vector<MonRect>& monitors,
                                     const MonRect& fb);
+
+// Rebind a window screen to new source pixel dims. First bind (src_w==0):
+// set aspect + dims only. Later resize: scale cfg.size by the pixel-diagonal
+// ratio (panel follows the desktop resize) and update aspect + dims.
+void scene_window_resize(ScreenInst& s, int new_w, int new_h);
 
 // World pose: rotate (yaw then pitch) the rack forward axis by
 // azimuth/elevation, walk distance*dist_scale along it from the rack origin;
