@@ -90,6 +90,28 @@ static bool cursor_source_origin(const std::vector<OutputRect>& outs,
     return false;
 }
 
+// -------------------------------------------------------- window grab ------
+// Ctrl+Alt+W support: read the WM's notion of the focused window and its
+// current pixel size, for capture_create_window (T5) to grab.
+
+static Window read_active_window(Display* dpy, Window root) {
+    Atom prop = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", True), type; int fmt;
+    unsigned long n, after; unsigned char* data = nullptr;
+    if (prop == None) return 0;
+    if (XGetWindowProperty(dpy, root, prop, 0, 1, False, AnyPropertyType,
+                           &type, &fmt, &n, &after, &data) != Success || !data) return 0;
+    Window w = n ? *reinterpret_cast<Window*>(data) : 0;
+    XFree(data);
+    return w;
+}
+
+static bool window_dims(Display* dpy, Window w, int& ow, int& oh) {
+    XWindowAttributes a;
+    if (!w || !XGetWindowAttributes(dpy, w, &a)) return false;
+    ow = a.width; oh = a.height;
+    return a.map_state == IsViewable && ow > 0 && oh > 0;
+}
+
 // ------------------------------------------------------------- SDK glue ----
 
 static XRDeviceProviderHandle g_provider = nullptr;
@@ -469,7 +491,7 @@ int main(int argc, char** argv) {
     // unreliable, and the MVP wants a global recenter shortcut anyway. Grab
     // each combo with NumLock/CapsLock variants so they fire regardless.
     {
-        KeySym hot[] = { XK_r, XK_bracketleft, XK_bracketright, XK_minus, XK_equal, XK_q };
+        KeySym hot[] = { XK_r, XK_bracketleft, XK_bracketright, XK_minus, XK_equal, XK_q, XK_w };
         unsigned base = ControlMask | Mod1Mask;
         unsigned locks[] = { 0, Mod2Mask, LockMask, Mod2Mask | LockMask };
         for (KeySym ks : hot) {
@@ -814,6 +836,55 @@ int main(int argc, char** argv) {
                     scene[active_screen].cfg.size = std::min(400.f, scene[active_screen].cfg.size + 10.f);
                 else if (multi) rack_size_scale = std::min(3.f, rack_size_scale * 1.1f);
                 else { diag_in = std::min(400.f, diag_in + 10.f); scene[0].cfg.size = diag_in; }
+            }
+            else if (ks == XK_w) {
+                Window aw = read_active_window(dpy, root);
+                int ww, wh;
+                if (!aw || aw == sout.window || !window_dims(dpy, aw, ww, wh)) {
+                    fprintf(stderr, "grab-window: no valid focused window\n");
+                } else {
+                    int slot = slots.alloc();
+                    if (slot < 0) { fprintf(stderr, "grab-window: slot cap reached\n"); }
+                    else {
+                        auto b = capture_create_window(aw, o.capture_hz);
+                        if (!b->start()) { slots.release(slot); fprintf(stderr, "grab-window: start failed\n"); }
+                        else {
+                            win_src[slot] = std::move(b);
+                            int target = active_screen;
+                            if (target < 0) {              // spawn: revive a placeholder or append
+                                for (size_t i = 0; i < scene.size(); i++)
+                                    if (scene[i].source_index < 0 && scene[i].cfg.source == "window") { target = int(i); break; }
+                                if (target < 0) { scene.push_back(ScreenInst{}); target = int(scene.size()) - 1; }
+                                scene[target].cfg.source = "window";
+                                // Face it: identical construction to the fist-hold
+                                // "screen recenter" branch below (place directly in
+                                // front of the user, facing them) — undo ori_offset to
+                                // get the head pose into the rack/world frame, fold in
+                                // `trim` so the panel's forward matches the render
+                                // camera exactly, then re-express as a rack-relative
+                                // override via world_to_rack_frame. Mirroring that
+                                // proven path (rather than a bare head_q/head_p use)
+                                // is what keeps a spawn correctly placed after a
+                                // recenter has moved ori_offset away from identity.
+                                Quat head_rc = qmul(qconj(ori_offset), head_q);
+                                Quat face = qmul(head_rc, trim);       // matches render forward
+                                Vec3 hp = qrot(qconj(ori_offset), head_p);
+                                Vec3 fw = qrot(face, { 0, 0, -1 });
+                                Vec3 wp = { hp.x + fw.x * distance, hp.y + fw.y * distance, hp.z + fw.z * distance };
+                                world_to_rack_frame(rack_q, rack_p, face, wp,
+                                                    scene[target].cfg.pose_ori,
+                                                    scene[target].cfg.pose_pos);
+                                scene[target].cfg.has_pose_override = true;
+                                scene[target].cfg.size = diag_in;
+                                active_screen = target;
+                            }
+                            scene[target].source_index = slot;
+                            scene[target].uv[0] = 0; scene[target].uv[1] = 0;
+                            scene[target].uv[2] = 1; scene[target].uv[3] = 1;
+                            scene[target].src_w = scene[target].src_h = 0;   // pump binds real dims (T7)
+                        }
+                    }
+                }
             }
         }
         if (!g_running) break;
