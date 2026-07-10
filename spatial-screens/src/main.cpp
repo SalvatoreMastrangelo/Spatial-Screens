@@ -112,6 +112,30 @@ static bool window_dims(Display* dpy, Window w, int& ow, int& oh) {
     return a.map_state == IsViewable && ow > 0 && oh > 0;
 }
 
+// Config-declared window screens (screen.N.source=window, window-match=<substr>):
+// resolve a match string to a live window at startup. ":active" defers to the
+// WM's focused-window property; otherwise walk the root's children and match
+// substring against either WM_CLASS field (res_class or res_name).
+static Window find_window_by_match(Display* dpy, Window root, const std::string& needle) {
+    if (needle == ":active") return read_active_window(dpy, root);
+    Window rr, parent, *kids = nullptr; unsigned nk = 0;
+    if (!XQueryTree(dpy, root, &rr, &parent, &kids, &nk)) return 0;
+    Window found = 0;
+    for (unsigned i = 0; i < nk && !found; i++) {
+        XClassHint ch{};
+        if (XGetClassHint(dpy, kids[i], &ch)) {
+            std::string cls = ch.res_class ? ch.res_class : "";
+            std::string nm = ch.res_name ? ch.res_name : "";
+            if (ch.res_class) XFree(ch.res_class);
+            if (ch.res_name) XFree(ch.res_name);
+            if (cls.find(needle) != std::string::npos || nm.find(needle) != std::string::npos)
+                found = kids[i];
+        }
+    }
+    if (kids) XFree(kids);
+    return found;
+}
+
 // ------------------------------------------------------------- SDK glue ----
 
 static XRDeviceProviderHandle g_provider = nullptr;
@@ -587,6 +611,35 @@ int main(int argc, char** argv) {
     CursorUnder cursor_under;
     SourceSlots slots;                                      // slot 0 = monitor (never alloc'd)
     std::unique_ptr<CaptureBackend> win_src[kSourceSlots];  // [1..7] window backends
+
+    // Resolve config-declared window screens (screen.N.source=window) now that
+    // slots/win_src exist. scene_build (T2) left these as source_index=-1
+    // placeholders; bind the ones that match a live window, leave the rest as
+    // placeholders (never crash startup over an unmatched window).
+    for (auto& s : scene) {
+        if (s.cfg.source != "window" || s.source_index >= 0) continue;
+        Window w = find_window_by_match(dpy, root, s.cfg.window_match);
+        int ww, wh, slot;
+        if (!w || !window_dims(dpy, w, ww, wh) || (slot = slots.alloc()) < 0) {
+            fprintf(stderr, "scene: window-match '%s' unresolved — placeholder\n",
+                    s.cfg.window_match.c_str());
+            continue;
+        }
+        auto b = capture_create_window(w, capture_hz);
+        if (!b->start()) {
+            slots.release(slot);
+            fprintf(stderr, "scene: window-match '%s' start failed — placeholder\n",
+                    s.cfg.window_match.c_str());
+            continue;
+        }
+        win_src[slot] = std::move(b);
+        s.source_index = slot;
+        s.uv[0] = 0; s.uv[1] = 0; s.uv[2] = 1; s.uv[3] = 1;
+        s.src_w = s.src_h = 0;  // unbound: pump (re)creates the texture on first
+                                 // frame instead of uploading into a null staging
+                                 // buffer sized for the old (monitor) dims.
+    }
+
     auto switch_backend = [&]() {
         while (chain_pos < chain.size()) {
             const std::string& kind = chain[chain_pos++];
