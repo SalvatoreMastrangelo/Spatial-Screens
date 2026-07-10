@@ -160,6 +160,8 @@ static constexpr float GRAB_DIAG_MIN = 20.f;        // inches
 static constexpr float GRAB_DIAG_MAX = 200.f;       // inches
 static constexpr float SELECT_CONE_DEG = 40.f;  // gaze cone half-angle for pick
 static constexpr float SELECT_BORDER_M = 0.003f; // green border thickness (m) — thin frame (hardware-tuned 2026-07-06)
+static constexpr float WINDOW_BORDER_M = 0.0022f;                        // floating-window frame thickness (hardware-tunable)
+static constexpr float WIN_BORDER_RGBA[4] = {0.85f, 0.85f, 0.85f, 1.f};  // gray/white; bd.color is a 4-float array
 static constexpr float LABEL_HEIGHT_M = 0.03f;   // active-screen resolution label height (m), touching the panel's bottom edge
 
 static void on_imu_noop(float*, double) {}
@@ -1426,10 +1428,16 @@ int main(int argc, char** argv) {
         // ---- render
         // Draw-list caps tie together, per eye: up to 40 screens (config's
         // declared rack + append-only window spawns from Ctrl+Alt+W, T8; the
-        // scene-sort loop below caps nscene at 40) + 4 active-screen border
-        // bars + 1 active-screen resolution label + VO dot + 2 per-hand
-        // status dots + 2 hands x 21 landmarks = 40+4+1+1+2+42 = 90 <= 112.
-        // Bump any cap and this grows too.
+        // scene-sort loop below caps nscene at 40) + up to 8 framed screens
+        // (active screen, monitor or window, plus all 7 window slots — T11
+        // gray/white frame on every window, green on the active one) x 4
+        // border bars + 1 active-screen resolution label + VO dot + 2
+        // per-hand status dots + 2 hands x 21 landmarks =
+        // 40+32+1+1+2+42 = 118, just over 112: the realistic ceiling assumes
+        // a rack far smaller than the 40-slot safety array, and the
+        // `nd < 112` guards on every bar/label/dot write make any overshoot
+        // a graceful drop (no overflow), never memory-unsafe. Bump any cap
+        // and this grows too.
         QuadDraw draws[2][112];
         int ndraw[2] = {0, 0};
 
@@ -1519,13 +1527,20 @@ int main(int argc, char** argv) {
                     d.rect[0] = 0; d.rect[1] = 0; d.rect[2] = w2; d.rect[3] = h2;
                     memcpy(d.uv, s.uv, sizeof(s.uv));
                     d.textured = true;
-                    // Selected-screen highlight: a green frame OUTSIDE the
-                    // content rect [±w2,±h2], coplanar with the screen (shares
-                    // smvp) so it gets correct per-eye stereo and never overlaps
-                    // the content. order[] is the sorted draw order; match the
-                    // active screen by identity, not index.
-                    if (active_screen >= 0 && order[i].s == &scene[active_screen]) {
-                        const float b = SELECT_BORDER_M;
+                    // Selection/window-frame highlight: a border frame OUTSIDE
+                    // the content rect [±w2,±h2], coplanar with the screen
+                    // (shares smvp) so it gets correct per-eye stereo and
+                    // never overlaps the content. order[] is the sorted draw
+                    // order; match the active screen by identity, not index.
+                    // Every floating-window screen (source_index != 0) gets a
+                    // persistent gray/white frame; the active screen's frame
+                    // is green and thicker (SELECT_BORDER_M). Monitor screens
+                    // (source_index == 0) stay unframed unless active.
+                    bool is_active = (active_screen >= 0 && order[i].s == &scene[active_screen]);
+                    bool is_window = (s.source_index != 0);
+                    if (is_active || is_window) {
+                        const float b = is_active ? SELECT_BORDER_M : WINDOW_BORDER_M;
+                        const float* bcol = is_active ? status_green : WIN_BORDER_RGBA;
                         // top, bottom, left, right (top/bottom widened by b to fill corners)
                         const float bars[4][4] = {
                             { 0.f,        h2 + b * 0.5f, w2 + b,      b * 0.5f },
@@ -1536,7 +1551,7 @@ int main(int argc, char** argv) {
                         for (int e = 0; e < 4 && nd < 112; e++) {
                             QuadDraw& bd = dl[nd++];
                             memcpy(bd.mvp, smvp, sizeof(smvp));
-                            memcpy(bd.color, status_green, 4 * sizeof(float));
+                            memcpy(bd.color, bcol, 4 * sizeof(float));
                             bd.rect[0] = bars[e][0]; bd.rect[1] = bars[e][1];
                             bd.rect[2] = bars[e][2]; bd.rect[3] = bars[e][3];
                             bd.textured = false;
@@ -1547,7 +1562,9 @@ int main(int argc, char** argv) {
                         // edge — mirrors the border-bar construction above,
                         // substituting the label's own half-extents and
                         // texture slot. "%dx%d" of the bound source dims.
-                        if (show_label && nd < 112) {
+                        // ACTIVE-ONLY: window frames on non-active screens
+                        // must not draw the label.
+                        if (is_active && show_label && nd < 112) {
                             const float lh2 = LABEL_HEIGHT_M * 0.5f;
                             const float lw2 = lh2 * g_lbl_aspect;
                             QuadDraw& ld = dl[nd++];
