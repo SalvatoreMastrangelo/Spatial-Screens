@@ -92,7 +92,7 @@ static bool cursor_source_origin(const std::vector<OutputRect>& outs,
 }
 
 // -------------------------------------------------------- window grab ------
-// Ctrl+Alt+W support: read the WM's notion of the focused window and its
+// Ctrl+Alt+S support: read the WM's notion of the focused window and its
 // current pixel size, for capture_create_window (T5) to grab.
 
 static Window read_active_window(Display* dpy, Window root) {
@@ -521,7 +521,7 @@ int main(int argc, char** argv) {
     // unreliable, and the MVP wants a global recenter shortcut anyway. Grab
     // each combo with NumLock/CapsLock variants so they fire regardless.
     {
-        KeySym hot[] = { XK_r, XK_bracketleft, XK_bracketright, XK_minus, XK_equal, XK_q, XK_w };
+        KeySym hot[] = { XK_r, XK_bracketleft, XK_bracketright, XK_minus, XK_equal, XK_q, XK_s };
         unsigned base = ControlMask | Mod1Mask;
         unsigned locks[] = { 0, Mod2Mask, LockMask, Mod2Mask | LockMask };
         for (KeySym ks : hot) {
@@ -829,7 +829,7 @@ int main(int argc, char** argv) {
     Quat grab_head_q0;         // head orientation (recentered frame) at grab start — grab follows head pose
 
     printf("running — hotkeys work globally with Ctrl+Alt: R recenter (Shift adds "
-           "VIO reset), [ ] distance, - = size, W grab focused window (onto active "
+           "VIO reset), [ ] distance, - = size, S grab focused window (onto active "
            "screen, or spawn), Q quit\n"
            "gestures (if sidecar connected): open palm=arm (either hand); "
            "index+middle (two-up) while looking at a screen=select it; armed hand "
@@ -897,7 +897,7 @@ int main(int argc, char** argv) {
                 else if (multi) rack_size_scale = std::min(3.f, rack_size_scale * 1.1f);
                 else { diag_in = std::min(400.f, diag_in + 10.f); scene[0].cfg.size = diag_in; }
             }
-            else if (ks == XK_w) {
+            else if (ks == XK_s) {
                 Window aw = read_active_window(dpy, root);
                 int ww, wh;
                 if (!aw || aw == sout.window || !window_dims(dpy, aw, ww, wh)) {
@@ -1266,7 +1266,7 @@ int main(int argc, char** argv) {
 
             // Window sources: pump each live backend's latest frame, follow
             // any dim change (texture + scene binding), then upload. No-op
-            // until Task 8 populates win_src[] (Ctrl+Alt+W grab/spawn).
+            // until Task 8 populates win_src[] (Ctrl+Alt+S grab/spawn).
             for (int i = 1; i < kSourceSlots; i++) {
                 if (!win_src[i]) continue;
                 if (!win_src[i]->alive()) {                  // window closed
