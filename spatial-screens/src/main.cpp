@@ -157,7 +157,7 @@ static float g_lbl_aspect = 1.f;                   // pixel aspect (w/h) of the 
 static constexpr float PINCH_DISTANCE_SENSITIVITY = 4.0f; // tune after hands-on test; higher = faster response to hand motion
 static constexpr double FIST_HOLD_SECONDS = 0.5;          // how long a fist must be held before it triggers recenter
 static constexpr float GRAB_REPOSITION_GAIN = 1.5f; // image-fraction -> world-fraction; tune on hardware
-static constexpr float GRAB_DIAG_MIN = 20.f;        // inches
+static constexpr float GRAB_DIAG_MIN = 3.f;         // inches (min panel diagonal; shared by gesture + hotkey)
 static constexpr float GRAB_DIAG_MAX = 200.f;       // inches
 static constexpr float SELECT_CONE_DEG = 40.f;  // gaze cone half-angle for pick
 static constexpr float SELECT_BORDER_M = 0.003f; // green border thickness (m) — thin frame (hardware-tuned 2026-07-06)
@@ -887,9 +887,9 @@ int main(int argc, char** argv) {
             }
             else if (ks == XK_minus) {
                 if (active_screen >= 0)
-                    scene[active_screen].cfg.size = std::max(10.f, scene[active_screen].cfg.size - 10.f);
+                    scene[active_screen].cfg.size = std::max(GRAB_DIAG_MIN, scene[active_screen].cfg.size - 10.f);
                 else if (multi) rack_size_scale = std::max(0.4f, rack_size_scale * 0.9f);
-                else { diag_in = std::max(10.f, diag_in - 10.f); scene[0].cfg.size = diag_in; }
+                else { diag_in = std::max(GRAB_DIAG_MIN, diag_in - 10.f); scene[0].cfg.size = diag_in; }
             }
             else if (ks == XK_equal) {
                 if (active_screen >= 0)
