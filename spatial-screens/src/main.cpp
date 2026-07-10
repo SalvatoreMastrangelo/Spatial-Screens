@@ -64,6 +64,7 @@
 #include "sbs_mode.h"
 #include "scene.h"
 #include "stereo.h"
+#include "source_slots.h"
 
 // -------------------------------------------------------- cursor overlay ----
 // Neither capture path delivers the pointer (mutter on X11 ignores the
@@ -562,6 +563,8 @@ int main(int argc, char** argv) {
     std::unique_ptr<CaptureBackend> cap;
     float cap_aspect = 16.f / 9.f;
     CursorUnder cursor_under;
+    SourceSlots slots;                                      // slot 0 = monitor (never alloc'd)
+    std::unique_ptr<CaptureBackend> win_src[kSourceSlots];  // [1..7] window backends
     auto switch_backend = [&]() {
         while (chain_pos < chain.size()) {
             const std::string& kind = chain[chain_pos++];
@@ -1119,6 +1122,28 @@ int main(int argc, char** argv) {
                                      vk.tex_pitch, sx, sy, &cursor_under);
                     vk.tex_dirty = true;
                 }
+            }
+
+            // Window sources: pump each live backend's latest frame, follow
+            // any dim change (texture + scene binding), then upload. No-op
+            // until Task 8 populates win_src[] (Ctrl+Alt+W grab/spawn).
+            for (int i = 1; i < kSourceSlots; i++) {
+                if (!win_src[i]) continue;
+                if (!win_src[i]->alive()) {                  // window closed
+                    win_src[i]->stop(); win_src[i].reset(); slots.release(i);
+                    for (auto& s : scene) if (s.source_index == i) s.source_index = -1;
+                    continue;
+                }
+                CaptureFrame wf;
+                if (!win_src[i]->latest_frame(wf)) continue;
+                // Re-create the texture + follow size on any dim change.
+                bool dims_changed = false;
+                for (auto& s : scene)
+                    if (s.source_index == i && (s.src_w != wf.w || s.src_h != wf.h)) {
+                        scene_window_resize(s, wf.w, wf.h); dims_changed = true;
+                    }
+                if (dims_changed) vkr_set_source_size(vk, i, wf.w, wf.h, wf.pitch);
+                vkr_upload_source(vk, i, wf.data, size_t(wf.pitch) * wf.h);
             }
         }
 
