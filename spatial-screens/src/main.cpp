@@ -770,7 +770,8 @@ int main(int argc, char** argv) {
     Quat grab_head_q0;         // head orientation (recentered frame) at grab start — grab follows head pose
 
     printf("running — hotkeys work globally with Ctrl+Alt: R recenter (Shift adds "
-           "VIO reset), [ ] distance, - = size, Q quit\n"
+           "VIO reset), [ ] distance, - = size, W grab focused window (onto active "
+           "screen, or spawn), Q quit\n"
            "gestures (if sidecar connected): open palm=arm (either hand); "
            "index+middle (two-up) while looking at a screen=select it; armed hand "
            "pinch-drag vertical=distance, fist-hold(0.5s)=recenter selected screen "
@@ -877,7 +878,16 @@ int main(int argc, char** argv) {
                                 scene[target].cfg.has_pose_override = true;
                                 scene[target].cfg.size = diag_in;
                                 active_screen = target;
+                                multi = scene.size() > 1;   // spawn may have grown the scene
                             }
+                            // Grabbing onto a screen that already shows a window
+                            // (re-grab) must free that old window slot+backend —
+                            // otherwise it keeps running with nothing referencing
+                            // it (a permanent leak of the 7 window slots). Slot 0
+                            // (monitor) and <0 (placeholder) are not window slots.
+                            scene[target].cfg.source = "window";
+                            int old = scene[target].source_index;
+                            if (old >= 1) { win_src[old].reset(); slots.release(old); }
                             scene[target].source_index = slot;
                             scene[target].uv[0] = 0; scene[target].uv[1] = 0;
                             scene[target].uv[2] = 1; scene[target].uv[3] = 1;
