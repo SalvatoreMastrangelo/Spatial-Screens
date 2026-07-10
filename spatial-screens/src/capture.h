@@ -36,4 +36,5 @@ public:
 };
 
 std::unique_ptr<CaptureBackend> capture_create_xshm(const OutputRect& source, int hz);
+std::unique_ptr<CaptureBackend> capture_create_window(Window win, int hz);
 std::unique_ptr<CaptureBackend> capture_create_test();

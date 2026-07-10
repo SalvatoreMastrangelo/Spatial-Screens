@@ -3,7 +3,7 @@ SDK_LIB := $(SDK_DIR)/lib/x86_64
 
 CXX ?= g++
 CXXFLAGS := -O2 -g -std=c++17 -Wall -Wextra -I$(SDK_DIR)/include -I../bridge
-VK_LIBS := -lvulkan -lX11 -lXext -lXrandr -lXfixes
+VK_LIBS := -lvulkan -lX11 -lXext -lXrandr -lXfixes -lXcomposite
 
 CAP_PC := dbus-1 libpipewire-0.3
 CAP_CFLAGS := $(shell pkg-config --cflags $(CAP_PC))
@@ -17,7 +17,7 @@ LDFLAGS := -L$(SDK_LIB) -lglasses $(VK_LIBS) -lpthread $(CAP_LIBS) \
 SHADER_HDRS := shaders/quad.vert.spv.h shaders/quad.frag.spv.h
 OBJS := src/main.o src/vk_renderer.o src/vk_surface.o src/gesture_client.o \
         src/gesture_parse.o src/gesture_manip.o src/scene.o \
-        src/capture.o src/capture_xshm.o src/config.o src/capture_portal.o src/telemetry.o \
+        src/capture.o src/capture_xshm.o src/capture_window.o src/config.o src/capture_portal.o src/telemetry.o \
         src/sbs_mode.o
 
 spatial-screens: $(OBJS)
@@ -122,12 +122,20 @@ src/capture_portal.o: src/capture_portal.cpp src/capture_portal.h src/capture.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 src/capture_test.o: src/capture_portal.h
 
+src/capture_window.o: src/capture_window.cpp src/capture.h src/vk_surface.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
 capture-test: src/capture_test.o $(CAPTURE_OBJS) src/vk_surface.o
 	$(CXX) $^ -o $@ $(VK_LIBS) $(CAP_LIBS) -lpthread
+
+src/capture_window_test.o: src/capture_window_test.cpp src/capture.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+capture-window-test: src/capture_window_test.o src/capture_window.o
+	$(CXX) $^ -o $@ $(VK_LIBS) -lpthread
 
 run: spatial-screens
 	./run.sh
 clean:
-	rm -f spatial-screens vk-test capture-test gesture-parse-test gesture-manip-test stereo-math-test predict-math-test text-raster-test sbs-spike src/*.o
+	rm -f spatial-screens vk-test capture-test capture-window-test gesture-parse-test gesture-manip-test stereo-math-test predict-math-test text-raster-test sbs-spike src/*.o
 
 .PHONY: run clean test

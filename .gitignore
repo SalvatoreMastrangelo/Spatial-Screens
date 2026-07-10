@@ -21,3 +21,4 @@ spatial-screens/gesture-manip-test
 spatial-screens/stereo-math-test
 spatial-screens/predict-math-test
 spatial-screens/text-raster-test
+spatial-screens/capture-window-test
