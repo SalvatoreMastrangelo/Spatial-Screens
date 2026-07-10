@@ -1,7 +1,7 @@
 // WebSocket telemetry speaking the viture-bridge protocol (documented in
 // bridge/main.cpp) so the phase-1 sensor-viz dashboard monitors
 // spatial-screens unmodified, plus one new message type:
-//   {"type":"app", fps, sixdof, anchored, distance, size, backend, direct, rss, stereo, screens}
+//   {"type":"app", fps, sixdof, anchored, distance, size, backend, direct, rss, stereo, screens, window_sources}
 // The bridge and spatial-screens never run together (single-client SDK), so
 // both default to port 8765. All send_* methods rate-limit internally and
 // no-op when disabled — safe to call every frame.
@@ -29,7 +29,7 @@ public:
     // rack scale multipliers, not meters/inches.
     void send_app(float fps, bool sixdof, bool anchored, float distance,
                   float size_in, const char* backend, bool direct, int rss_mb,
-                  bool stereo, int screens);                                              // <= 2 Hz
+                  bool stereo, int screens, int window_sources);                          // <= 2 Hz
     // Per-hand presence + fused stereo depth (meters); depth < 0 = none.
     void send_hands(bool left_present, bool left_has_depth, float left_depth,
                     bool right_present, bool right_has_depth, float right_depth); // <= 10 Hz

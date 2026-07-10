@@ -1818,11 +1818,12 @@ int main(int argc, char** argv) {
         tele.send_hello(market, g_pid, fw, XR_DEVICE_TYPE_VITURE_CARINA);
         // Multi mode overloads distance/size with the rack scale multipliers
         // (see Telemetry::send_app); single-screen sends meters/inches.
+        int wc = 0; for (int i = 1; i < kSourceSlots; i++) if (win_src[i]) wc++;
         tele.send_app(last_fps, sixdof_live, anchored,
                       multi ? rack_dist_scale : distance,
                       multi ? rack_size_scale : diag_in,
                       cap ? cap->name() : "none", sout.direct, rss_mb,
-                      stereo_active, int(scene.size()));
+                      stereo_active, int(scene.size()), wc);
         tele.send_hands(gev.left.present, gev.left.has_depth, gev.left.depth,
                         gev.right.present, gev.right.has_depth, gev.right.depth);
     }
