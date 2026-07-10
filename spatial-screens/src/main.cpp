@@ -1089,8 +1089,8 @@ int main(int argc, char** argv) {
             CaptureFrame f{};
             if (cap && cap->latest_frame(f)) {
                 cap_frames++;
-                if (uint32_t(f.w) != vk.tex_w || uint32_t(f.h) != vk.tex_h ||
-                    f.pitch != vk.tex_pitch) {
+                if (uint32_t(f.w) != vk.src[0].w || uint32_t(f.h) != vk.src[0].h ||
+                    f.pitch != vk.src[0].pitch) {
                     vkr_destroy_texture(vk);
                     if (!vkr_init_texture(vk, f.w, f.h, f.pitch)) {
                         fprintf(stderr, "capture texture rebuild failed\n");
@@ -1110,17 +1110,17 @@ int main(int argc, char** argv) {
             // slower (portal only sends on damage), but the cursor should
             // still move smoothly: restore the pixels under the previous
             // stamp, re-blend at the current position, re-copy to the GPU.
-            if (g_running && cap && have_xfixes && vk.staging_ptr &&
+            if (g_running && cap && have_xfixes && vk.src[0].staging_ptr &&
                 !cap->composites_cursor() && strcmp(cap->name(), "test") != 0) {
                 int sx = 0, sy = 0;
                 if (cursor_source_origin(outputs, capture_name, glasses.name,
-                                         int(vk.tex_w), int(vk.tex_h), sx, sy)) {
-                    uint8_t* st = static_cast<uint8_t*>(vk.staging_ptr);
+                                         int(vk.src[0].w), int(vk.src[0].h), sx, sy)) {
+                    uint8_t* st = static_cast<uint8_t*>(vk.src[0].staging_ptr);
                     vkr_wait_uploads(vk);
-                    cursor_restore(cursor_under, st, vk.tex_pitch);
-                    composite_cursor(dpy, st, int(vk.tex_w), int(vk.tex_h),
-                                     vk.tex_pitch, sx, sy, &cursor_under);
-                    vk.tex_dirty = true;
+                    cursor_restore(cursor_under, st, vk.src[0].pitch);
+                    composite_cursor(dpy, st, int(vk.src[0].w), int(vk.src[0].h),
+                                     vk.src[0].pitch, sx, sy, &cursor_under);
+                    vk.src[0].dirty = true;
                 }
             }
 
@@ -1534,7 +1534,7 @@ int main(int argc, char** argv) {
                 // mode and re-pick stereo/mono from the new extent.
                 fprintf(stderr, "display: rebuilding after present failures (mode change?)\n");
                 tele.log("warn", "display mode changed - rebuilding");
-                uint32_t old_tex_w = vk.tex_w, old_tex_h = vk.tex_h, old_pitch = vk.tex_pitch;
+                uint32_t old_tex_w = vk.src[0].w, old_tex_h = vk.src[0].h, old_pitch = vk.src[0].pitch;
                 vkr_destroy_device(vk);
                 direct_release(vk.instance);
                 direct_restore(dpy);

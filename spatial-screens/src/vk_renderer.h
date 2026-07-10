@@ -59,18 +59,6 @@ struct VkRend {
     // index 0 = monitor · 1..kSourceSlots-1 = window · kLabelSource = label
     RSource src[kSourceSlots + 1];
 
-    // Back-compat aliases for main.cpp's pre-Task-7 direct scalar access to
-    // the monitor texture (slot 0) — true references into src[0], not copies,
-    // so reads/writes through either name stay in sync (main.cpp writes
-    // tex_dirty directly for the cursor-overlay path). Task 7 migrates
-    // main.cpp onto vkr_set_source_size/vkr_upload_source; these aliases can
-    // be deleted once no call site references them.
-    uint32_t& tex_w = src[0].w;
-    uint32_t& tex_h = src[0].h;
-    uint32_t& tex_pitch = src[0].pitch;      // pitch in bytes
-    void*& staging_ptr = src[0].staging_ptr;
-    bool& tex_dirty = src[0].dirty;
-
     static const int FRAMES = 2;  // frames in flight
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd[FRAMES] = {};
@@ -90,9 +78,10 @@ void vkr_destroy_texture(VkRend& r);
 void vkr_upload(VkRend& r, const void* pixels, size_t bytes);
 // Per-source twins: idx selects VkRend::src[idx] (0 = monitor, 1..kSourceSlots-1
 // = window, kLabelSource = label). vkr_set_source_size lazily (re)creates the
-// slot's image/staging only when dims differ or it isn't created yet.
-// vkr_init_texture/vkr_upload are thin idx==0 wrappers over these.
-void vkr_set_source_size(VkRend& r, int idx, uint32_t w, uint32_t h, uint32_t pitch);
+// slot's image/staging only when dims differ or it isn't created yet; returns
+// false if (re)creation was attempted and failed (true if it was a no-op or
+// succeeded). vkr_init_texture/vkr_upload are thin idx==0 wrappers over these.
+bool vkr_set_source_size(VkRend& r, int idx, uint32_t w, uint32_t h, uint32_t pitch);
 void vkr_upload_source(VkRend& r, int idx, const void* pixels, size_t bytes);
 // Wait for all in-flight frames before mutating the staging buffer — a
 // prior frame's buffer->image copy may still be reading it (visible as a

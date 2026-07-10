@@ -471,17 +471,16 @@ static void destroy_source(VkRend& r, int idx) {
     s.w = 0; s.h = 0; s.pitch = 0; s.dirty = false;
 }
 
-void vkr_set_source_size(VkRend& r, int idx, uint32_t w, uint32_t h, uint32_t pitch) {
+bool vkr_set_source_size(VkRend& r, int idx, uint32_t w, uint32_t h, uint32_t pitch) {
     RSource& s = r.src[idx];
-    if (s.tex_view != VK_NULL_HANDLE && s.w == w && s.h == h && s.pitch == pitch) return;
+    if (s.tex_view != VK_NULL_HANDLE && s.w == w && s.h == h && s.pitch == pitch) return true;
     vkr_wait_uploads(r);  // a prior frame's copy may still reference the old image/staging
     destroy_source(r, idx);
-    create_source(r, idx, w, h, pitch);
+    return create_source(r, idx, w, h, pitch);
 }
 
 bool vkr_init_texture(VkRend& r, uint32_t w, uint32_t h, uint32_t pitch_bytes) {
-    vkr_set_source_size(r, 0, w, h, pitch_bytes);
-    return true;
+    return vkr_set_source_size(r, 0, w, h, pitch_bytes);
 }
 
 void vkr_destroy_texture(VkRend& r) {
