@@ -65,6 +65,7 @@
 #include "scene.h"
 #include "stereo.h"
 #include "source_slots.h"
+#include "text_raster.h"
 
 // -------------------------------------------------------- cursor overlay ----
 // Neither capture path delivers the pointer (mutter on X11 ignores the
@@ -151,6 +152,7 @@ static std::atomic<double> g_vsync_last{0.0};      // steady_clock secs of last 
 static std::atomic<double> g_vsync_interval{0.0};  // EMA of inter-vsync seconds
 static float g_last_predict_ms = 0.f;              // live prediction horizon, gated; written each frame below
 static float g_last_svel_deg = 0.f;                // smoothvel: live lead angle applied (deg), 0 in other modes
+static float g_lbl_aspect = 1.f;                   // pixel aspect (w/h) of the rasterized resolution-label texture
 static constexpr float PINCH_DISTANCE_SENSITIVITY = 4.0f; // tune after hands-on test; higher = faster response to hand motion
 static constexpr double FIST_HOLD_SECONDS = 0.5;          // how long a fist must be held before it triggers recenter
 static constexpr float GRAB_REPOSITION_GAIN = 1.5f; // image-fraction -> world-fraction; tune on hardware
@@ -158,6 +160,7 @@ static constexpr float GRAB_DIAG_MIN = 20.f;        // inches
 static constexpr float GRAB_DIAG_MAX = 200.f;       // inches
 static constexpr float SELECT_CONE_DEG = 40.f;  // gaze cone half-angle for pick
 static constexpr float SELECT_BORDER_M = 0.003f; // green border thickness (m) — thin frame (hardware-tuned 2026-07-06)
+static constexpr float LABEL_HEIGHT_M = 0.03f;   // active-screen resolution label height (m), touching the panel's bottom edge
 
 static void on_imu_noop(float*, double) {}
 static void on_pose_noop(float*, double) {}
@@ -1421,11 +1424,35 @@ int main(int argc, char** argv) {
         }
 
         // ---- render
-        // Draw-list caps tie together, per eye: config's 16-screen max
-        // + 4 active-screen border bars + VO dot + 2 per-hand status dots
-        // + 2 hands x 21 landmarks = 65 <= 72. Bump any cap and this grows too.
-        QuadDraw draws[2][72];
+        // Draw-list caps tie together, per eye: up to 40 screens (config's
+        // declared rack + append-only window spawns from Ctrl+Alt+W, T8; the
+        // scene-sort loop below caps nscene at 40) + 4 active-screen border
+        // bars + 1 active-screen resolution label + VO dot + 2 per-hand
+        // status dots + 2 hands x 21 landmarks = 40+4+1+1+2+42 = 90 <= 112.
+        // Bump any cap and this grows too.
+        QuadDraw draws[2][112];
         int ndraw[2] = {0, 0};
+
+        // ---- active-screen resolution label: rasterize on change (Task 10)
+        // Only for window screens (source_index >= 1) once their capture has
+        // bound real pixel dims (src_w > 0); monitor/placeholder screens show
+        // no label.
+        static int lbl_screen = -1, lbl_w = -1, lbl_h = -1;   // last rasterized
+        bool show_label = active_screen >= 0 &&
+                          scene[active_screen].source_index >= 1 &&
+                          scene[active_screen].src_w > 0;
+        if (show_label &&
+            (lbl_screen != active_screen || lbl_w != scene[active_screen].src_w ||
+             lbl_h != scene[active_screen].src_h)) {
+            char buf[32];
+            snprintf(buf, sizeof buf, "%dx%d", scene[active_screen].src_w, scene[active_screen].src_h);
+            RasterBuf rb = text_raster_render(buf, 0x00FFFFFF, 0x00202020, 2);
+            vkr_set_source_size(vk, kLabelSource, rb.w, rb.h, rb.w * 4);
+            vkr_upload_source(vk, kLabelSource, rb.data.data(), rb.data.size());
+            lbl_screen = active_screen; lbl_w = scene[active_screen].src_w; lbl_h = scene[active_screen].src_h;
+            g_lbl_aspect = float(rb.w) / float(rb.h);
+        }
+
         if (have_pose && anchored) {
             // view = trim ⊗ inverse(recentered head pose)
             // smoothvel: extrapolate the DISPLAY orientation forward by the gated horizon
@@ -1476,7 +1503,7 @@ int main(int argc, char** argv) {
                 // the same green (design: the feedback channels agree).
                 const float status_green[4] = { 0.20f, 0.90f, 0.30f, 1.f };
                 for (int i = 0; i < nscene; i++) {
-                    if (nd >= 72) break;
+                    if (nd >= 112) break;
                     const ScreenInst& s = *order[i].s;
                     float model[16], vm[16], smvp[16];
                     mat_from_pose(order[i].q, order[i].p, model);
@@ -1506,7 +1533,7 @@ int main(int argc, char** argv) {
                             { -(w2 + b * 0.5f), 0.f,      b * 0.5f,    h2       },
                             {  (w2 + b * 0.5f), 0.f,      b * 0.5f,    h2       },
                         };
-                        for (int e = 0; e < 4 && nd < 72; e++) {
+                        for (int e = 0; e < 4 && nd < 112; e++) {
                             QuadDraw& bd = dl[nd++];
                             memcpy(bd.mvp, smvp, sizeof(smvp));
                             memcpy(bd.color, status_green, 4 * sizeof(float));
@@ -1514,6 +1541,24 @@ int main(int argc, char** argv) {
                             bd.rect[2] = bars[e][2]; bd.rect[3] = bars[e][3];
                             bd.textured = false;
                             bd.circle = false;
+                        }
+                        // Active-screen resolution label: one quad, coplanar
+                        // with the panel (shares smvp), touching its bottom
+                        // edge — mirrors the border-bar construction above,
+                        // substituting the label's own half-extents and
+                        // texture slot. "%dx%d" of the bound source dims.
+                        if (show_label && nd < 112) {
+                            const float lh2 = LABEL_HEIGHT_M * 0.5f;
+                            const float lw2 = lh2 * g_lbl_aspect;
+                            QuadDraw& ld = dl[nd++];
+                            memcpy(ld.mvp, smvp, sizeof(smvp));
+                            memcpy(ld.color, white, 4 * sizeof(float));
+                            ld.rect[0] = 0.f; ld.rect[1] = -(h2 + lh2);
+                            ld.rect[2] = lw2; ld.rect[3] = lh2;
+                            ld.uv[0] = 0.f; ld.uv[1] = 0.f; ld.uv[2] = 1.f; ld.uv[3] = 1.f;
+                            ld.textured = true;
+                            ld.circle = false;
+                            ld.source_index = kLabelSource;
                         }
                     }
                 }
@@ -1604,7 +1649,7 @@ int main(int argc, char** argv) {
                         // Unarmed: the whole hand is drawn mildly transparent;
                         // arming (open palm) makes it opaque.
                         const float ov_alpha = armed[hnd] ? 1.f : 0.45f;
-                        for (int i = 0; i < 21 && nd < 72; i++) {
+                        for (int i = 0; i < 21 && nd < 112; i++) {
                             float nx = h.landmarks[i][0];
                             float ny = h.landmarks[i][1];
                             // Normalized image coords -> panel-local. Image y is

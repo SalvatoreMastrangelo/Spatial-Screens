@@ -18,7 +18,7 @@ SHADER_HDRS := shaders/quad.vert.spv.h shaders/quad.frag.spv.h
 OBJS := src/main.o src/vk_renderer.o src/vk_surface.o src/gesture_client.o \
         src/gesture_parse.o src/gesture_manip.o src/scene.o \
         src/capture.o src/capture_xshm.o src/capture_window.o src/config.o src/capture_portal.o src/telemetry.o \
-        src/sbs_mode.o
+        src/sbs_mode.o src/text_raster.o
 
 spatial-screens: $(OBJS)
 	$(CXX) $(OBJS) -o $@ $(LDFLAGS)
