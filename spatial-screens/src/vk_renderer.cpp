@@ -509,6 +509,10 @@ void vkr_upload(VkRend& r, const void* pixels, size_t bytes) {
 
 static void record_quads(VkCommandBuffer cb, VkRend& r, const QuadDraw* draws, int n) {
     for (int i = 0; i < n; i++) {
+        int si = draws[i].source_index;
+        if (si < 0 || si > kSourceSlots || r.src[si].tex_view == VK_NULL_HANDLE) si = 0;
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, r.playout,
+                                0, 1, &r.src[si].dset, 0, nullptr);
         PushBlock pb{};
         memcpy(pb.mvp, draws[i].mvp, sizeof(pb.mvp));
         memcpy(pb.color, draws[i].color, sizeof(pb.color));
@@ -600,8 +604,8 @@ static bool submit_impl(VkRend& r, const QuadDraw* const lists[2], const int cou
     vkCmdBeginRenderPass(cb, &rbi, VK_SUBPASS_CONTENTS_INLINE);
 
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, r.pipeline);
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, r.playout,
-                            0, 1, &r.src[0].dset, 0, nullptr);
+    // Descriptor set is now bound per-quad inside record_quads (source_index
+    // selects the slot); no single pre-loop bind.
     if (!lists[1]) {
         VkViewport vpt{0, 0, (float)r.extent.width, (float)r.extent.height, 0, 1};
         VkRect2D sc{{0, 0}, r.extent};
