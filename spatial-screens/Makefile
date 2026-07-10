@@ -64,11 +64,20 @@ src/predict_math_test.o: src/predict_math_test.cpp src/predict_math.h src/pose_m
 predict-math-test: src/predict_math_test.o
 	$(CXX) $^ -o $@
 
-test: gesture-parse-test gesture-manip-test stereo-math-test predict-math-test
+src/text_raster.o: src/text_raster.cpp src/text_raster.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+src/text_raster_test.o: src/text_raster_test.cpp src/text_raster.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+# Pure rasterizer test — no SDK/Vulkan/X deps.
+text-raster-test: src/text_raster_test.o src/text_raster.o
+	$(CXX) $^ -o $@
+
+test: gesture-parse-test gesture-manip-test stereo-math-test predict-math-test text-raster-test
 	./gesture-parse-test
 	./gesture-manip-test
 	./stereo-math-test
 	./predict-math-test
+	./text-raster-test
 
 src/config.o: src/config.cpp src/config.h src/pose_math.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
@@ -119,6 +128,6 @@ capture-test: src/capture_test.o $(CAPTURE_OBJS) src/vk_surface.o
 run: spatial-screens
 	./run.sh
 clean:
-	rm -f spatial-screens vk-test capture-test gesture-parse-test gesture-manip-test stereo-math-test predict-math-test sbs-spike src/*.o
+	rm -f spatial-screens vk-test capture-test gesture-parse-test gesture-manip-test stereo-math-test predict-math-test text-raster-test sbs-spike src/*.o
 
 .PHONY: run clean test
